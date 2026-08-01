@@ -153,7 +153,7 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
 
   // Use environment variables or default relative paths assuming both repos are side-by-side
   const outputDir = process.env.STATIC_JSON_DIR || require('path').resolve(__dirname, '../../../../sodhaniScrap/output');
-  const consolidatedDir = process.env.CONSOLIDATED_JSON_DIR || require('path').resolve(__dirname, '../../../../sodhaniScrap/output consolidated');
+  const consolidatedDir = process.env.CONSOLIDATED_JSON_DIR || require('path').resolve(__dirname, '../../../../sodhaniScrap/output_consolidated');
 
   const fs = require('fs').promises;
   const path = require('path');
