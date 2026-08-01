@@ -151,9 +151,9 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
     return;
   }
 
-  // Use environment variables or default relative paths assuming both repos are side-by-side
-  const outputDir = process.env.STATIC_JSON_DIR || require('path').resolve(__dirname, '../../../../sodhaniScrap/output');
-  const consolidatedDir = process.env.CONSOLIDATED_JSON_DIR || require('path').resolve(__dirname, '../../../../sodhaniScrap/output_consolidated');
+  // Use environment variables or default absolute paths
+  const outputDir = process.env.STATIC_JSON_DIR || '/opt/sodhaniScrap/output';
+  const consolidatedDir = process.env.CONSOLIDATED_JSON_DIR || '/opt/sodhaniScrap/output_consolidated';
 
   const fs = require('fs').promises;
   const path = require('path');
@@ -172,7 +172,7 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
     try {
       const files = await fs.readdir(dir);
       const targetLower = targetBase.toLowerCase();
-      const match = files.find((f: string) => f.toLowerCase() === targetLower);
+      const match = files.find((f: string) => f.toLowerCase() === targetLower || f.toLowerCase() === targetLower + '.json');
       if (match) {
         return await tryReadFile(dir, match);
       }
@@ -182,15 +182,19 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
     return null;
   };
 
-  const targetFilename = `${query}.json`;
+  // Try without extension first (500012), then with .json (500012.json)
+  const candidates = [query, `${query}.json`];
 
-  // First try direct read (faster)
-  let data = await tryReadFile(consolidatedDir, targetFilename);
-  if (!data) data = await tryReadFile(outputDir, targetFilename);
+  let data = null;
+  for (const filename of candidates) {
+    if (data) break;
+    data = await tryReadFile(consolidatedDir, filename);
+    if (!data) data = await tryReadFile(outputDir, filename);
+  }
 
-  // If not found, try case-insensitive read (e.g. Reliance.json vs RELIANCE.json)
-  if (!data) data = await findFileCaseInsensitive(consolidatedDir, targetFilename);
-  if (!data) data = await findFileCaseInsensitive(outputDir, targetFilename);
+  // If still not found, try case-insensitive search
+  if (!data) data = await findFileCaseInsensitive(consolidatedDir, query);
+  if (!data) data = await findFileCaseInsensitive(outputDir, query);
 
   if (data) {
     res.json(data);
