@@ -65,7 +65,7 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
     `SELECT "FinInstrmId", "TckrSymb", "FinInstrmNm", "ISIN", "SctySrs", "Sgmt",
             "LastPric", "TtlTradgVol", "TtlTrfVal", "TtlNbOfTxsExctd", "TradDt", "BizDt"
      FROM company_stock
-     WHERE UPPER("TckrSymb") = UPPER($1)
+     WHERE UPPER("TckrSymb") = UPPER($1) OR "FinInstrmId"::text = $1
      LIMIT 1`,
     [symbol]
   );
@@ -85,7 +85,7 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
             hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits"
      FROM historical_prices hp
      JOIN company_stock cs ON cs."FinInstrmId" = hp."FinInstrmId"
-     WHERE UPPER(cs."TckrSymb") = UPPER($1)
+     WHERE UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1
      ORDER BY hp."record_date" DESC
      LIMIT $2`,
     [symbol, limit]
@@ -117,10 +117,10 @@ router.get('/stocks', asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT "FinInstrmId", "TckrSymb", "FinInstrmNm", "ISIN", "SctySrs", "LastPric", "TradDt"
      FROM company_stock
-     WHERE "TckrSymb" ILIKE $1 OR "FinInstrmNm" ILIKE $1
+     WHERE "TckrSymb" ILIKE $1 OR "FinInstrmNm" ILIKE $1 OR "ISIN" ILIKE $1 OR "FinInstrmId"::text = $2
      ORDER BY "TckrSymb" ASC
-     LIMIT $2`,
-    [`%${search}%`, limit]
+     LIMIT $3`,
+    [`%${search}%`, search, limit]
   );
   res.json({ count: result.rows.length, stocks: result.rows });
 }));
