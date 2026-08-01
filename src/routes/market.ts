@@ -22,7 +22,7 @@ router.get('/top-gainers', asyncHandler(async (req, res) => {
     `SELECT "rank", "scrip_cd", "scripname", "long_name", "ltradert", "change_val", "change_percent", "record_time"
      FROM bse_top_gainers_losers
      WHERE "type" = 'gainer'
-     ORDER BY "rank" ASC
+     ORDER BY "change_percent" DESC
      LIMIT $1`,
     [limit]
   );
@@ -36,7 +36,7 @@ router.get('/top-losers', asyncHandler(async (req, res) => {
     `SELECT "rank", "scrip_cd", "scripname", "long_name", "ltradert", "change_val", "change_percent", "record_time"
      FROM bse_top_gainers_losers
      WHERE "type" = 'loser'
-     ORDER BY "rank" ASC
+     ORDER BY "change_percent" ASC
      LIMIT $1`,
     [limit]
   );
@@ -141,6 +141,62 @@ router.get('/announcements', asyncHandler(async (req, res) => {
       );
 
   res.json({ count: result.rows.length, announcements: result.rows });
+}));
+
+// GET /api/static-stock?query=RELIANCE
+router.get('/static-stock', asyncHandler(async (req, res) => {
+  const query = req.query.query ? String(req.query.query).trim() : '';
+  if (!query) {
+    res.status(400).json({ error: 'Query parameter "query" (stock name or number) is required' });
+    return;
+  }
+
+  // Use environment variables or default relative paths assuming both repos are side-by-side
+  const outputDir = process.env.STATIC_JSON_DIR || require('path').resolve(__dirname, '../../../../sodhaniScrap/output');
+  const consolidatedDir = process.env.CONSOLIDATED_JSON_DIR || require('path').resolve(__dirname, '../../../../sodhaniScrap/output consolidated');
+
+  const fs = require('fs').promises;
+  const path = require('path');
+
+  const tryReadFile = async (dir: string, filename: string) => {
+    try {
+      const filePath = path.join(dir, filename);
+      const data = await fs.readFile(filePath, 'utf-8');
+      return JSON.parse(data);
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const findFileCaseInsensitive = async (dir: string, targetBase: string) => {
+    try {
+      const files = await fs.readdir(dir);
+      const targetLower = targetBase.toLowerCase();
+      const match = files.find((f: string) => f.toLowerCase() === targetLower);
+      if (match) {
+        return await tryReadFile(dir, match);
+      }
+    } catch (e) {
+      // Ignore directory read errors
+    }
+    return null;
+  };
+
+  const targetFilename = `${query}.json`;
+
+  // First try direct read (faster)
+  let data = await tryReadFile(consolidatedDir, targetFilename);
+  if (!data) data = await tryReadFile(outputDir, targetFilename);
+
+  // If not found, try case-insensitive read (e.g. Reliance.json vs RELIANCE.json)
+  if (!data) data = await findFileCaseInsensitive(consolidatedDir, targetFilename);
+  if (!data) data = await findFileCaseInsensitive(outputDir, targetFilename);
+
+  if (data) {
+    res.json(data);
+  } else {
+    res.status(404).json({ error: `Static JSON not found for '${query}'` });
+  }
 }));
 
 export default router;
