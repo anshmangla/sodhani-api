@@ -19,10 +19,36 @@ function clampLimit(raw: unknown, def: number, max: number): number {
 router.get('/top-gainers', asyncHandler(async (req, res) => {
   const limit = clampLimit(req.query.limit, 10, 50);
   const result = await pool.query(
-    `SELECT "rank", "scrip_cd", "scripname", "long_name", "ltradert", "change_val", "change_percent", "record_time"
-     FROM bse_top_gainers_losers
-     WHERE "type" = 'gainer'
-     ORDER BY "change_percent" DESC
+    `WITH latest_date AS (
+       SELECT MAX("record_date") as max_date FROM historical_prices
+     ),
+     prev_date AS (
+       SELECT MAX("record_date") as p_date FROM historical_prices WHERE "record_date" < (SELECT max_date FROM latest_date)
+     ),
+     latest_prices AS (
+       SELECT "FinInstrmId", "close_price", "record_date"
+       FROM historical_prices
+       WHERE "record_date" = (SELECT max_date FROM latest_date)
+     ),
+     prev_prices AS (
+       SELECT "FinInstrmId", "close_price" as prev_close
+       FROM historical_prices
+       WHERE "record_date" = (SELECT p_date FROM prev_date)
+     )
+     SELECT 
+       ROW_NUMBER() OVER (ORDER BY ((lp."close_price" - pp.prev_close) / pp.prev_close) DESC) as rank,
+       cs."FinInstrmId"::text as scrip_cd,
+       cs."TckrSymb" as scripname,
+       cs."FinInstrmNm" as long_name,
+       lp."close_price" as ltradert,
+       ROUND((lp."close_price" - pp.prev_close)::numeric, 4) as change_val,
+       ROUND(((lp."close_price" - pp.prev_close) / pp.prev_close * 100)::numeric, 4) as change_percent,
+       lp."record_date" as record_time
+     FROM latest_prices lp
+     JOIN prev_prices pp ON lp."FinInstrmId" = pp."FinInstrmId"
+     JOIN company_stock cs ON cs."FinInstrmId" = lp."FinInstrmId"
+     WHERE pp.prev_close > 0
+     ORDER BY change_percent DESC
      LIMIT $1`,
     [limit]
   );
@@ -33,10 +59,36 @@ router.get('/top-gainers', asyncHandler(async (req, res) => {
 router.get('/top-losers', asyncHandler(async (req, res) => {
   const limit = clampLimit(req.query.limit, 10, 50);
   const result = await pool.query(
-    `SELECT "rank", "scrip_cd", "scripname", "long_name", "ltradert", "change_val", "change_percent", "record_time"
-     FROM bse_top_gainers_losers
-     WHERE "type" = 'loser'
-     ORDER BY "change_percent" ASC
+    `WITH latest_date AS (
+       SELECT MAX("record_date") as max_date FROM historical_prices
+     ),
+     prev_date AS (
+       SELECT MAX("record_date") as p_date FROM historical_prices WHERE "record_date" < (SELECT max_date FROM latest_date)
+     ),
+     latest_prices AS (
+       SELECT "FinInstrmId", "close_price", "record_date"
+       FROM historical_prices
+       WHERE "record_date" = (SELECT max_date FROM latest_date)
+     ),
+     prev_prices AS (
+       SELECT "FinInstrmId", "close_price" as prev_close
+       FROM historical_prices
+       WHERE "record_date" = (SELECT p_date FROM prev_date)
+     )
+     SELECT 
+       ROW_NUMBER() OVER (ORDER BY ((lp."close_price" - pp.prev_close) / pp.prev_close) ASC) as rank,
+       cs."FinInstrmId"::text as scrip_cd,
+       cs."TckrSymb" as scripname,
+       cs."FinInstrmNm" as long_name,
+       lp."close_price" as ltradert,
+       ROUND((lp."close_price" - pp.prev_close)::numeric, 4) as change_val,
+       ROUND(((lp."close_price" - pp.prev_close) / pp.prev_close * 100)::numeric, 4) as change_percent,
+       lp."record_date" as record_time
+     FROM latest_prices lp
+     JOIN prev_prices pp ON lp."FinInstrmId" = pp."FinInstrmId"
+     JOIN company_stock cs ON cs."FinInstrmId" = lp."FinInstrmId"
+     WHERE pp.prev_close > 0
+     ORDER BY change_percent ASC
      LIMIT $1`,
     [limit]
   );
