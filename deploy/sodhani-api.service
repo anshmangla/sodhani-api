@@ -1,0 +1,15 @@
+[Unit]
+Description=Sodhani read-only market-data API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sodhani-api
+ExecStart=/usr/bin/node /opt/sodhani-api/dist/index.js
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/sodhani-api/.env
+User=azureuser
+
+[Install]
+WantedBy=multi-user.target
