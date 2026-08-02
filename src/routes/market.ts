@@ -143,24 +143,14 @@ router.get('/announcements', asyncHandler(async (req, res) => {
   res.json({ count: result.rows.length, announcements: result.rows });
 }));
 
-// GET /api/static-stock?query=RELIANCE
-router.get('/static-stock', asyncHandler(async (req, res) => {
-  const query = req.query.query ? String(req.query.query).trim() : '';
-  if (!query) {
-    res.status(400).json({ error: 'Query parameter "query" (stock name or number) is required' });
-    return;
-  }
-
-  // Use environment variables or default absolute paths
-  const outputDir = process.env.STATIC_JSON_DIR || '/opt/sodhaniScrap/output';
-  const consolidatedDir = process.env.CONSOLIDATED_JSON_DIR || '/opt/sodhaniScrap/output_consolidated';
-
+// Helper for static stock data search with BSE -> NSE fallback
+const searchStaticStock = async (dir: string, query: string) => {
   const fs = require('fs').promises;
   const path = require('path');
 
-  const tryReadFile = async (dir: string, filename: string) => {
+  const tryReadFile = async (directory: string, filename: string) => {
     try {
-      const filePath = path.join(dir, filename);
+      const filePath = path.join(directory, filename);
       const data = await fs.readFile(filePath, 'utf-8');
       return JSON.parse(data);
     } catch (e) {
@@ -168,13 +158,13 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
     }
   };
 
-  const findFileCaseInsensitive = async (dir: string, targetBase: string) => {
+  const findFileCaseInsensitive = async (directory: string, targetBase: string) => {
     try {
-      const files = await fs.readdir(dir);
+      const files = await fs.readdir(directory);
       const targetLower = targetBase.toLowerCase();
       const match = files.find((f: string) => f.toLowerCase() === targetLower || f.toLowerCase() === targetLower + '.json');
       if (match) {
-        return await tryReadFile(dir, match);
+        return await tryReadFile(directory, match);
       }
     } catch (e) {
       // Ignore directory read errors
@@ -182,24 +172,73 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
     return null;
   };
 
-  // Try without extension first (500012), then with .json (500012.json)
+  // 1. Try exact or case-insensitive for the query
   const candidates = [query, `${query}.json`];
-
   let data = null;
   for (const filename of candidates) {
     if (data) break;
-    data = await tryReadFile(consolidatedDir, filename);
-    if (!data) data = await tryReadFile(outputDir, filename);
+    data = await tryReadFile(dir, filename);
+  }
+  if (!data) data = await findFileCaseInsensitive(dir, query);
+
+  // 2. If not found, check exchange_code_mappings.json for BSE to NSE mapping
+  if (!data) {
+    try {
+      const mappingsPath = path.resolve(__dirname, '../../exchange_code_mappings.json');
+      const mappingsData = await fs.readFile(mappingsPath, 'utf-8');
+      const mappingsJson = JSON.parse(mappingsData);
+      const bseToNse = mappingsJson.bse_to_nse || {};
+      
+      const nseSymbol = bseToNse[query];
+      if (nseSymbol) {
+        const nseCandidates = [nseSymbol, `${nseSymbol}.json`];
+        for (const filename of nseCandidates) {
+          if (data) break;
+          data = await tryReadFile(dir, filename);
+        }
+        if (!data) data = await findFileCaseInsensitive(dir, nseSymbol);
+      }
+    } catch (e) {
+      console.error("Error reading exchange_code_mappings.json:", e);
+    }
   }
 
-  // If still not found, try case-insensitive search
-  if (!data) data = await findFileCaseInsensitive(consolidatedDir, query);
-  if (!data) data = await findFileCaseInsensitive(outputDir, query);
+  return data;
+};
+
+// GET /api/static-stock?query=500325
+router.get('/static-stock', asyncHandler(async (req, res) => {
+  const query = req.query.query ? String(req.query.query).trim() : '';
+  if (!query) {
+    res.status(400).json({ error: 'Query parameter "query" (stock name or number) is required' });
+    return;
+  }
+
+  const outputDir = process.env.STATIC_JSON_DIR || '/opt/sodhaniScrap/output';
+  const data = await searchStaticStock(outputDir, query);
 
   if (data) {
     res.json(data);
   } else {
     res.status(404).json({ error: `Static JSON not found for '${query}'` });
+  }
+}));
+
+// GET /api/static-stock-consolidated?query=500325
+router.get('/static-stock-consolidated', asyncHandler(async (req, res) => {
+  const query = req.query.query ? String(req.query.query).trim() : '';
+  if (!query) {
+    res.status(400).json({ error: 'Query parameter "query" (stock name or number) is required' });
+    return;
+  }
+
+  const consolidatedDir = process.env.CONSOLIDATED_JSON_DIR || '/opt/sodhaniScrap/output_consolidated';
+  const data = await searchStaticStock(consolidatedDir, query);
+
+  if (data) {
+    res.json(data);
+  } else {
+    res.status(404).json({ error: `Consolidated static JSON not found for '${query}'` });
   }
 }));
 
