@@ -64,7 +64,9 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT cs."FinInstrmId", cs."TckrSymb", cs."FinInstrmNm", cs."ISIN", cs."SctySrs", cs."Sgmt",
             COALESCE(sm."cmp", cs."LastPric") AS "LastPric", 
-            cs."TtlTradgVol", cs."TtlTrfVal", cs."TtlNbOfTxsExctd", cs."TradDt", cs."BizDt"
+            cs."TtlTradgVol", cs."TtlTrfVal", cs."TtlNbOfTxsExctd", 
+            COALESCE(sm."updated_at", cs."TradDt") AS "TradDt", 
+            COALESCE(sm."updated_at", cs."BizDt") AS "BizDt"
      FROM company_stock cs
      LEFT JOIN stock_metrics sm ON (sm.symbol = cs."FinInstrmId"::text OR UPPER(sm.symbol) = UPPER(cs."TckrSymb"))
      WHERE UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1
