@@ -50,7 +50,7 @@ router.get('/volume-shockers', asyncHandler(async (req, res) => {
     `SELECT "scrip_cd", "scripname", "long_name", "trd_vol", "wkavgqty", "volumechangetimes",
             "ltradert", "change_val", "change_percent", "turnover", "nsurl", "record_date"
      FROM bse_spurt_volume
-     WHERE "record_date" = (SELECT MAX("record_date") FROM bse_spurt_volume)
+     WHERE "record_date"::DATE = (SELECT MAX("record_date")::DATE FROM bse_spurt_volume)
      ORDER BY "volumechangetimes" DESC NULLS LAST
      LIMIT $1`,
     [limit]
