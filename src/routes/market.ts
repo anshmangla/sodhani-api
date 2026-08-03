@@ -242,136 +242,32 @@ router.get('/static-stock-consolidated', asyncHandler(async (req, res) => {
   }
 }));
 
-// Helper to safely parse numbers from strings like "₹ 1,284" or "7.78 %"
-function parseCleanNumber(val: any): number {
-  if (typeof val === 'number') return val;
-  if (!val) return 0;
-  const str = String(val).replace(/,/g, '');
-  const match = str.match(/-?\d+(\.\d+)?/);
-  return match ? parseFloat(match[0]) : 0;
-}
-
 // GET /api/metrics/:symbol
 router.get('/metrics/:symbol', asyncHandler(async (req, res) => {
   const symbol = req.params.symbol;
   
-  // Fetch live history CMP
-  const historyResult = await pool.query(
-    `SELECT hp.close_price
-     FROM historical_prices hp
-     JOIN company_stock cs ON cs."FinInstrmId" = hp."FinInstrmId"
-     WHERE UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1
-     ORDER BY hp."record_date" DESC
-     LIMIT 1`,
+  const result = await pool.query(
+    `SELECT * FROM stock_metrics WHERE UPPER(symbol) = UPPER($1)`,
     [symbol]
   );
 
-  if (historyResult.rows.length === 0) {
-    res.status(404).json({ error: `Live history not found for symbol '${symbol}'` });
-    return;
-  }
-  const cmp = parseFloat(historyResult.rows[0].close_price);
-
-  // Fetch static stock JSON
-  const consolidatedDir = process.env.CONSOLIDATED_JSON_DIR || '/opt/sodhaniScrap/output_consolidated';
-  const outputDir = process.env.STATIC_JSON_DIR || '/opt/sodhaniScrap/output';
-  
-  let json = await searchStaticStock(consolidatedDir, symbol);
-  if (!json) {
-    json = await searchStaticStock(outputDir, symbol);
-  }
-
-  if (!json) {
-    res.status(404).json({ error: `Static JSON not found for '${symbol}'` });
+  if (result.rows.length === 0) {
+    res.status(404).json({ error: `Metrics not found for symbol '${symbol}'. They may not have been calculated yet.` });
     return;
   }
 
-  const mktCapJson = parseCleanNumber(json.key_metrics?.["Market Cap"]);
-  const currentPriceJson = parseCleanNumber(json.key_metrics?.["Current Price"]);
-  const roce = parseCleanNumber(json.key_metrics?.["ROCE"]);
-
-  // Calculate Shares Outstanding and Live Mkt Cap
-  let sharesOutstanding = 0;
-  if (currentPriceJson > 0) {
-    sharesOutstanding = mktCapJson / currentPriceJson;
-  }
-  const liveMktCap = cmp * sharesOutstanding;
-
-  // Extract from profit_loss
-  let annualEps = 0;
-  let dividendPayout = 0;
-  if (Array.isArray(json.profit_loss)) {
-    const epsRow = json.profit_loss.find((r: any) => r[""] === "EPS in Rs");
-    const divRow = json.profit_loss.find((r: any) => r[""] === "Dividend Payout %");
-    
-    // Find the latest year key by checking keys of the first row
-    const headerRow = json.profit_loss[0];
-    if (headerRow) {
-      const keys = Object.keys(headerRow).filter(k => k !== "");
-      if (keys.length > 0) {
-        const latestYear = keys[keys.length - 1];
-        if (epsRow) annualEps = parseCleanNumber(epsRow[latestYear]);
-        if (divRow) dividendPayout = parseCleanNumber(divRow[latestYear]);
-      }
-    }
-  }
-
-  let pe = 0;
-  if (annualEps > 0) {
-    pe = cmp / annualEps;
-  }
-
-  let annualDividendPerShare = annualEps * (dividendPayout / 100);
-  let divYld = 0;
-  if (cmp > 0) {
-    divYld = (annualDividendPerShare / cmp) * 100;
-  }
-
-  // Extract from quarterly
-  let npQtr = 0;
-  let profitVar = 0;
-  let salesQtr = 0;
-  let salesVar = 0;
-
-  if (Array.isArray(json.quarterly)) {
-    const netProfitRow = json.quarterly.find((r: any) => r[""] === "Net Profit");
-    const salesRow = json.quarterly.find((r: any) => r[""] === "Sales");
-    
-    const headerRow = json.quarterly[0];
-    if (headerRow) {
-      const keys = Object.keys(headerRow).filter(k => k !== "");
-      if (keys.length > 0) {
-        const latestQtr = keys[keys.length - 1];
-        
-        if (netProfitRow) {
-          npQtr = parseCleanNumber(netProfitRow[latestQtr]);
-          if (Array.isArray(netProfitRow.children)) {
-             const profitVarRow = netProfitRow.children.find((r: any) => r[""] === "YOY Profit Growth %");
-             if (profitVarRow) profitVar = parseCleanNumber(profitVarRow[latestQtr]);
-          }
-        }
-
-        if (salesRow) {
-          salesQtr = parseCleanNumber(salesRow[latestQtr]);
-          if (Array.isArray(salesRow.children)) {
-             const salesVarRow = salesRow.children.find((r: any) => r[""] === "YOY Sales Growth %");
-             if (salesVarRow) salesVar = parseCleanNumber(salesVarRow[latestQtr]);
-          }
-        }
-      }
-    }
-  }
-
+  const row = result.rows[0];
   const metrics = {
-    "CMP": cmp,
-    "P/E": pe,
-    "Mkt Cap": liveMktCap,
-    "Div Yld": divYld,
-    "NP Qtr": npQtr,
-    "Profit Var": profitVar,
-    "Sales Qtr": salesQtr,
-    "Sales Var": salesVar,
-    "ROCE": roce
+    "CMP": parseFloat(row.cmp),
+    "P/E": parseFloat(row.pe),
+    "Mkt Cap": parseFloat(row.mkt_cap),
+    "Div Yld": parseFloat(row.div_yld),
+    "NP Qtr": parseFloat(row.np_qtr),
+    "Profit Var": parseFloat(row.profit_var),
+    "Sales Qtr": parseFloat(row.sales_qtr),
+    "Sales Var": parseFloat(row.sales_var),
+    "ROCE": parseFloat(row.roce),
+    "updated_at": row.updated_at
   };
 
   res.json(metrics);
