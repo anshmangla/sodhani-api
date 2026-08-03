@@ -247,7 +247,14 @@ router.get('/metrics/:symbol', asyncHandler(async (req, res) => {
   const symbol = req.params.symbol;
   
   const result = await pool.query(
-    `SELECT * FROM stock_metrics WHERE UPPER(symbol) = UPPER($1)`,
+    `SELECT sm.* 
+     FROM stock_metrics sm
+     LEFT JOIN company_stock cs ON 
+        (sm.symbol = cs."FinInstrmId"::text OR UPPER(sm.symbol) = UPPER(cs."TckrSymb"))
+     WHERE UPPER(sm.symbol) = UPPER($1) 
+        OR UPPER(cs."TckrSymb") = UPPER($1) 
+        OR cs."FinInstrmId"::text = $1
+     LIMIT 1`,
     [symbol]
   );
 
