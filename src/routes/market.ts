@@ -129,20 +129,20 @@ router.get('/stocks', asyncHandler(async (req, res) => {
   res.json({ count: result.rows.length, stocks: result.rows });
 }));
 
-// GET /api/announcements?limit=20&scrip_cd=500325
-router.get('/announcements', asyncHandler(async (req, res) => {
+// GET /api/announcements/:symbol?limit=20
+router.get('/announcements/:symbol', asyncHandler(async (req, res) => {
+  const { symbol } = req.params;
   const limit = clampLimit(req.query.limit, 20, 100);
-  const scripCd = req.query.scrip_cd ? String(req.query.scrip_cd) : null;
 
-  const result = scripCd
-    ? await pool.query(
-        `SELECT * FROM bse_announcements WHERE "scrip_cd" = $1 ORDER BY "news_dt" DESC LIMIT $2`,
-        [scripCd, limit]
-      )
-    : await pool.query(
-        `SELECT * FROM bse_announcements ORDER BY "news_dt" DESC LIMIT $1`,
-        [limit]
-      );
+  const result = await pool.query(
+    `SELECT a.* 
+     FROM bse_announcements a
+     LEFT JOIN company_stock cs ON a.scrip_cd = cs."FinInstrmId"::text
+     WHERE a.scrip_cd = $1 OR UPPER(cs."TckrSymb") = UPPER($1)
+     ORDER BY a."news_dt" DESC 
+     LIMIT $2`,
+    [symbol, limit]
+  );
 
   res.json({ count: result.rows.length, announcements: result.rows });
 }));
