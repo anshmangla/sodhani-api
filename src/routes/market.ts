@@ -176,8 +176,12 @@ router.get('/screener', asyncHandler(async (req, res) => {
   let params: any[] = [];
   
   if (industry) {
-    whereClause = 'WHERE ci.industry_name = $1 OR ci.leaf_name = $1';
-    params.push(industry);
+    // Handle nested codes like "IN02/IN0201" by taking the last part
+    const parts = industry.split('/');
+    const code = parts[parts.length - 1];
+    
+    whereClause = 'WHERE ci.leaf_code LIKE $1';
+    params.push(`${code}%`);
   }
 
   // Get total count for pagination
