@@ -237,7 +237,8 @@ router.get('/technical/:symbol', asyncHandler(async (req, res) => {
   );
 
   if (result.rows.length === 0) {
-    return res.status(404).json({ error: \`Technical analysis not found for symbol '\${symbol}'.\` });
+    res.status(404).json({ error: `Technical analysis not found for symbol '${symbol}'.` });
+    return;
   }
 
   res.json({
