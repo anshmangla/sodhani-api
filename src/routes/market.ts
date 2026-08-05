@@ -224,6 +224,28 @@ router.get('/screener', asyncHandler(async (req, res) => {
   });
 }));
 
+// GET /api/technical/:symbol
+router.get('/technical/:symbol', asyncHandler(async (req, res) => {
+  const { symbol } = req.params;
+
+  const result = await pool.query(
+    `SELECT ta.ta_data, ta.updated_at
+     FROM technical_analysis ta
+     JOIN company_stock cs ON ta.fin_instrm_id = cs."FinInstrmId"::text
+     WHERE cs."FinInstrmId"::text = $1 OR UPPER(cs."TckrSymb") = UPPER($1)`,
+    [symbol]
+  );
+
+  if (result.rows.length === 0) {
+    return res.status(404).json({ error: \`Technical analysis not found for symbol '\${symbol}'.\` });
+  }
+
+  res.json({
+    data: result.rows[0].ta_data,
+    updated_at: result.rows[0].updated_at
+  });
+}));
+
 // Helper for static stock data search with BSE -> NSE fallback
 const searchStaticStock = async (dir: string, query: string) => {
   const fs = require('fs').promises;
