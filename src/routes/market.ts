@@ -147,6 +147,79 @@ router.get('/announcements/:symbol', asyncHandler(async (req, res) => {
   res.json({ count: result.rows.length, announcements: result.rows });
 }));
 
+// GET /api/screener?page=1&limit=25&industry=Pharmaceuticals&sort_by=mkt_cap&order=desc
+router.get('/screener', asyncHandler(async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = clampLimit(req.query.limit, 25, 100);
+  const offset = (page - 1) * limit;
+
+  const industry = req.query.industry ? String(req.query.industry) : null;
+  const sortByParam = req.query.sort_by ? String(req.query.sort_by).toLowerCase() : 'mkt_cap';
+  const orderParam = req.query.order ? String(req.query.order).toLowerCase() : 'desc';
+
+  // Map sort_by to actual columns to prevent SQL injection
+  const sortMap: Record<string, string> = {
+    'cmp': 'sm.cmp',
+    'pe': 'sm.pe',
+    'mkt_cap': 'sm.mkt_cap',
+    'div_yld': 'sm.div_yld',
+    'np_qtr': 'sm.np_qtr',
+    'profit_var': 'sm.profit_var',
+    'sales_qtr': 'sm.sales_qtr',
+    'sales_var': 'sm.sales_var',
+    'roce': 'sm.roce',
+  };
+  const sortColumn = sortMap[sortByParam] || sortMap['mkt_cap'];
+  const sortOrder = orderParam === 'asc' ? 'ASC' : 'DESC';
+
+  let whereClause = '';
+  let params: any[] = [];
+  
+  if (industry) {
+    whereClause = 'WHERE ci.industry_name = $1 OR ci.leaf_name = $1';
+    params.push(industry);
+  }
+
+  // Get total count for pagination
+  const countQuery = `
+    SELECT COUNT(*) 
+    FROM stock_metrics sm
+    JOIN company_stock cs ON 
+       (sm.symbol = cs."FinInstrmId"::text OR UPPER(sm.symbol) = UPPER(cs."TckrSymb"))
+    LEFT JOIN company_sectors ci ON cs."FinInstrmId"::text = ci.fin_instrm_id
+    ${whereClause}
+  `;
+  const countResult = await pool.query(countQuery, params);
+  const totalCount = parseInt(countResult.rows[0].count, 10);
+
+  // Get paginated data
+  const dataParams = [...params, limit, offset];
+  const dataQuery = `
+    SELECT 
+      cs."FinInstrmId", cs."TckrSymb", cs."FinInstrmNm",
+      ci.sector_name, ci.industry_name, ci.leaf_name,
+      sm.cmp, sm.pe, sm.mkt_cap, sm.div_yld, sm.np_qtr, sm.profit_var, sm.sales_qtr, sm.sales_var, sm.roce
+    FROM stock_metrics sm
+    JOIN company_stock cs ON 
+       (sm.symbol = cs."FinInstrmId"::text OR UPPER(sm.symbol) = UPPER(cs."TckrSymb"))
+    LEFT JOIN company_sectors ci ON cs."FinInstrmId"::text = ci.fin_instrm_id
+    ${whereClause}
+    ORDER BY ${sortColumn} ${sortOrder} NULLS LAST
+    LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+  `;
+  const result = await pool.query(dataQuery, dataParams);
+
+  res.json({
+    data: result.rows,
+    pagination: {
+      total: totalCount,
+      page,
+      limit,
+      totalPages: Math.ceil(totalCount / limit)
+    }
+  });
+}));
+
 // Helper for static stock data search with BSE -> NSE fallback
 const searchStaticStock = async (dir: string, query: string) => {
   const fs = require('fs').promises;
