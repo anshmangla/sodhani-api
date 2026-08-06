@@ -22,7 +22,10 @@ router.post('/order', requireAuth, asyncHandler(async (req, res) => {
   }
 
   const callResult = await pool.query(
-    'SELECT id, is_paid, price_paise FROM research_calls WHERE id = $1',
+    `SELECT rc.id, rc.is_paid, rc.price_paise, ra.is_active AS ra_is_active
+     FROM research_calls rc
+     JOIN research_analysts ra ON ra.id = rc.ra_id
+     WHERE rc.id = $1`,
     [callId]
   );
   if (callResult.rows.length === 0) {
@@ -30,6 +33,11 @@ router.post('/order', requireAuth, asyncHandler(async (req, res) => {
     return;
   }
   const row = callResult.rows[0];
+
+  if (!row.ra_is_active) {
+    res.status(400).json({ error: 'This call is no longer available for purchase' });
+    return;
+  }
 
   if (!row.is_paid) {
     res.status(400).json({ error: 'This call is not a paid call' });

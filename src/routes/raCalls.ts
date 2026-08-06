@@ -107,7 +107,7 @@ router.get('/calls/mine', requireRaAuth, asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT rc.*,
             COUNT(pc.id)::int AS purchase_count,
-            COALESCE(SUM(p.amount_paise), 0)::int AS revenue_paise
+            COALESCE(SUM(p.amount_paise), 0)::bigint AS revenue_paise
      FROM research_calls rc
      LEFT JOIN purchased_calls pc ON pc.call_id = rc.id
      LEFT JOIN payments p ON p.id = pc.payment_id
@@ -128,7 +128,7 @@ router.get('/dashboard', requireRaAuth, asyncHandler(async (req, res) => {
        (SELECT total_sales FROM research_analysts WHERE id = $1) AS total_sales`,
     [req.authRaId]
   );
-  res.status(200).json(result.rows[0]);
+  res.status(200).json({ dashboard: result.rows[0] });
 }));
 
 // POST /api/ra/calls/:id/comments
@@ -157,6 +157,28 @@ router.post('/calls/:id/comments', requireRaAuth, asyncHandler(async (req, res) 
   );
 
   res.status(201).json({ comment: result.rows[0] });
+}));
+
+// GET /api/ra/calls/:id/comments
+router.get('/calls/:id/comments', requireRaAuth, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const callResult = await pool.query('SELECT ra_id FROM research_calls WHERE id = $1', [id]);
+  if (callResult.rows.length === 0) {
+    res.status(404).json({ error: 'Call not found' });
+    return;
+  }
+  if (callResult.rows[0].ra_id !== req.authRaId) {
+    res.status(403).json({ error: 'Not your call' });
+    return;
+  }
+
+  const commentsResult = await pool.query(
+    'SELECT id, body, created_at FROM call_comments WHERE call_id = $1 ORDER BY created_at ASC',
+    [id]
+  );
+
+  res.status(200).json({ comments: commentsResult.rows });
 }));
 
 // PATCH /api/ra/calls/:id/status

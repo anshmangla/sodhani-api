@@ -78,10 +78,16 @@ function buildCallPayload(row: any, purchased: boolean) {
   return entitled ? buildFullPayload(row, purchased) : buildPreviewPayload(row, purchased);
 }
 
+// AND ra.is_active = true: a deactivated RA's calls are no longer publicly
+// discoverable or directly accessible — see finding #1 of the whole-branch
+// review. Callers that must still show a deactivated RA's own history
+// (myCalls.ts, /api/ra/calls/mine, /api/ra/dashboard) query research_calls
+// directly and do not use this shared join.
 const CALL_JOIN_SELECT = `
   SELECT rc.*, ra.full_name AS ra_name, ra.profile_picture_url AS ra_profile_picture_url, ra.designation AS ra_designation
   FROM research_calls rc
   JOIN research_analysts ra ON ra.id = rc.ra_id
+  WHERE ra.is_active = true
 `;
 
 // GET /api/calls?page=&limit=
@@ -92,7 +98,9 @@ router.get('/', asyncHandler(async (req, res) => {
   const limit = clampLimit(req.query.limit, 25, 100);
   const offset = (page - 1) * limit;
 
-  const countResult = await pool.query('SELECT COUNT(*) FROM research_calls');
+  const countResult = await pool.query(
+    'SELECT COUNT(*) FROM research_calls rc JOIN research_analysts ra ON ra.id = rc.ra_id WHERE ra.is_active = true'
+  );
   const total = parseInt(countResult.rows[0].count, 10);
 
   const dataResult = await pool.query(
@@ -123,7 +131,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
   const userId = await resolveOptionalUserId(req);
   const { id } = req.params;
 
-  const result = await pool.query(`${CALL_JOIN_SELECT} WHERE rc.id = $1`, [id]);
+  const result = await pool.query(`${CALL_JOIN_SELECT} AND rc.id = $1`, [id]);
   if (result.rows.length === 0) {
     res.status(404).json({ error: 'Call not found' });
     return;
