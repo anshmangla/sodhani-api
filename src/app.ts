@@ -4,6 +4,7 @@ import marketRouter from './routes/market';
 import authRouter from './routes/auth';
 import raAuthRouter from './routes/raAuth';
 import raCallsRouter from './routes/raCalls';
+import callsRouter from './routes/calls';
 
 export const app = express();
 
@@ -18,6 +19,7 @@ app.use('/api', marketRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/ra', raAuthRouter);
 app.use('/api/ra', raCallsRouter);
+app.use('/api/calls', callsRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
