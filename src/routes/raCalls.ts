@@ -126,7 +126,7 @@ router.get('/dashboard', requireRaAuth, asyncHandler(async (req, res) => {
        (SELECT COUNT(*)::int FROM research_calls WHERE ra_id = $1) AS total_calls,
        (SELECT COUNT(*)::int FROM research_calls WHERE ra_id = $1 AND is_paid = true) AS total_paid_calls,
        (SELECT total_sales FROM research_analysts WHERE id = $1) AS total_sales`,
-    [req.authRaId, req.authRaId, req.authRaId]
+    [req.authRaId]
   );
   res.status(200).json(result.rows[0]);
 }));
