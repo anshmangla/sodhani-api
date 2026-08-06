@@ -5,10 +5,13 @@ import authRouter from './routes/auth';
 import raAuthRouter from './routes/raAuth';
 import raCallsRouter from './routes/raCalls';
 import callsRouter from './routes/calls';
+import paymentsRouter from './routes/payments';
+import paymentsWebhookRouter from './routes/paymentsWebhook';
 
 export const app = express();
 
 app.use(cors());
+app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
 app.get('/health', (_req, res) => {
@@ -20,6 +23,8 @@ app.use('/api/auth', authRouter);
 app.use('/api/ra', raAuthRouter);
 app.use('/api/ra', raCallsRouter);
 app.use('/api/calls', callsRouter);
+app.use('/api/payments', paymentsRouter);
+app.use('/api/payments/webhook', paymentsWebhookRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
