@@ -19,7 +19,13 @@ export async function verifyMsg91AccessToken(accessToken: string): Promise<boole
     body: JSON.stringify({ authkey, 'access-token': accessToken }),
   });
 
-  const data = (await res.json()) as { type?: string };
+  let data: { type?: string };
+  try {
+    data = await res.json();
+  } catch (err) {
+    console.error('Failed to parse MSG91 response:', err);
+    return false;
+  }
   console.log('MSG91 verifyAccessToken response:', JSON.stringify(data));
 
   return data?.type === 'success';

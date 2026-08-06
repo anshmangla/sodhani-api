@@ -57,6 +57,14 @@ router.post('/verify-otp-signup', asyncHandler(async (req, res) => {
     return;
   }
 
+  if (email) {
+    const existingEmail = await pool.query('SELECT id FROM users WHERE lower(email) = lower($1)', [email]);
+    if (existingEmail.rows.length > 0) {
+      res.status(409).json({ detail: 'An account with this email already exists' });
+      return;
+    }
+  }
+
   const result = await pool.query(
     `INSERT INTO users (name, age, email, phone_number, auth_provider)
      VALUES ($1, $2, $3, $4, 'otp')
