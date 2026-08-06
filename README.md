@@ -273,7 +273,13 @@ GET /api/quote/ANDHRAPET
   "TtlTrfVal": "...",
   "TtlNbOfTxsExctd": "...",
   "TradDt": "2026-07-22",
-  "BizDt": "2026-07-22"
+  "BizDt": "2026-07-22",
+  "OpenPric": "...",
+  "HighPric": "...",
+  "LowPric": "...",
+  "ClosePric": "...",
+  "ChangeVal": "...",
+  "ChangePercent": "..."
 }
 ```
 
@@ -286,33 +292,47 @@ GET /api/quote/ANDHRAPET
 
 ### `GET /api/history/:symbol`
 
-Daily OHLCV history for one instrument, newest first. Same `:symbol` matching rules as `/api/quote`.
+OHLCV history for one instrument, ordered chronologically (oldest to newest). Time-based bucketing is applied dynamically based on the requested range (e.g., weekly buckets for `1y` and `5y`, monthly for `max`). Data is downsampled to ~100 points via LTTB for `line` charts to optimize client-side rendering. Same `:symbol` matching rules as `/api/quote`.
 
-| Query param | Default | Max |
-|---|---|---|
-| `limit` | 30 | 1000 |
+| Query param | Default | Max | Description |
+|---|---|---|---|
+| `range` | `1m` | - | One of `1d`, `1w`, `1m`, `1y`, `5y`, `max`. Mutually exclusive with `start_date`/`end_date`. |
+| `start_date` | - | - | YYYY-MM-DD. Requires `end_date`. |
+| `end_date` | - | - | YYYY-MM-DD. Requires `start_date`. |
+| `chartType` | `candlestick` | - | Either `candlestick` (returns raw/bucketed OHLCV) or `line` (applies LTTB downsampling returning only time and close_price). |
 
 **Example**
 ```
-GET /api/history/500012?limit=90
+GET /api/history/500012?range=1y&chartType=candlestick
 ```
 
-**Response**
+**Response (chartType=candlestick)**
 ```json
 {
   "symbol": "500012",
-  "count": 90,
+  "count": 52,
   "history": [
     {
-      "record_date": "2026-07-31",
+      "time": "2026-07-31",
       "open_price": "...",
       "high_price": "...",
       "low_price": "...",
       "close_price": "...",
-      "adj_close": ...,
-      "volume": "...",
-      "dividends": "0.0000",
-      "stock_splits": "0.0000"
+      "volume": "..."
+    }
+  ]
+}
+```
+
+**Response (chartType=line)**
+```json
+{
+  "symbol": "500012",
+  "count": 100,
+  "history": [
+    {
+      "time": "2026-07-31",
+      "close_price": "..."
     }
   ]
 }
