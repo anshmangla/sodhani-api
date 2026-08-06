@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import marketRouter from './routes/market';
 import authRouter from './routes/auth';
+import raAuthRouter from './routes/raAuth';
 
 export const app = express();
 
@@ -14,6 +15,7 @@ app.get('/health', (_req, res) => {
 
 app.use('/api', marketRouter);
 app.use('/api/auth', authRouter);
+app.use('/api/ra', raAuthRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
