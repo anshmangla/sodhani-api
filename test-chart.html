@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stock Chart – API Test</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0f0f14;
+      color: #e1e1e6;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 600;
+      margin-bottom: 20px;
+      color: #a0a0b0;
+      letter-spacing: 0.5px;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .controls input {
+      background: #1a1a24;
+      border: 1px solid #2a2a3a;
+      color: #e1e1e6;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      width: 180px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .controls input:focus { border-color: #5b5bf0; }
+    .btn-group {
+      display: flex;
+      gap: 4px;
+      background: #1a1a24;
+      border-radius: 8px;
+      padding: 3px;
+    }
+    .btn-group button {
+      background: transparent;
+      border: none;
+      color: #808090;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-group button:hover { color: #e1e1e6; }
+    .btn-group button.active {
+      background: #5b5bf0;
+      color: #fff;
+    }
+    .fetch-btn {
+      background: #5b5bf0;
+      border: none;
+      color: #fff;
+      padding: 8px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .fetch-btn:hover { background: #4a4ae0; }
+    .fetch-btn:disabled { background: #3a3a50; cursor: not-allowed; }
+
+    .info-bar {
+      display: flex;
+      gap: 24px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      color: #808090;
+    }
+    .info-bar span { display: inline-flex; align-items: center; gap: 4px; }
+    .info-bar .value { color: #e1e1e6; font-weight: 600; }
+    .info-bar .positive { color: #22c55e; }
+    .info-bar .negative { color: #ef4444; }
+
+    #chart-container {
+      width: 100%;
+      height: 500px;
+      background: #1a1a24;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #2a2a3a;
+    }
+    .status {
+      margin-top: 12px;
+      font-size: 12px;
+      color: #606070;
+    }
+    .status.error { color: #ef4444; }
+
+    .raw-data {
+      margin-top: 20px;
+    }
+    .raw-data summary {
+      cursor: pointer;
+      color: #808090;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    .raw-data pre {
+      background: #1a1a24;
+      border: 1px solid #2a2a3a;
+      border-radius: 8px;
+      padding: 16px;
+      font-size: 12px;
+      color: #a0a0b0;
+      max-height: 300px;
+      overflow: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>📊 Stock Chart API Tester</h1>
+
+  <div class="controls">
+    <input type="text" id="symbol" placeholder="Symbol (e.g. 500020)" value="500020" />
+
+    <div class="btn-group" id="range-group">
+      <button data-range="1d">1D</button>
+      <button data-range="1w">1W</button>
+      <button data-range="1m" class="active">1M</button>
+      <button data-range="1y">1Y</button>
+      <button data-range="5y">5Y</button>
+      <button data-range="max">MAX</button>
+    </div>
+
+    <div class="btn-group" id="chart-type-group">
+      <button data-type="candlestick" class="active">Candlestick</button>
+      <button data-type="line">Line</button>
+    </div>
+
+
+    <button class="fetch-btn" id="fetch-btn" onclick="fetchData()">Fetch</button>
+  </div>
+
+  <div class="info-bar" id="info-bar"></div>
+  <div id="chart-container"></div>
+  <div class="status" id="status"></div>
+
+  <details class="raw-data">
+    <summary>Raw API Response</summary>
+    <pre id="raw-json">Click "Fetch" to load data...</pre>
+  </details>
+
+  <script>
+    const API_BASE = 'http://127.0.0.1:4000/api';
+    let chart = null;
+    let series = null;
+    let currentRange = '1m';
+    let currentChartType = 'candlestick';
+
+    // Range buttons
+    document.querySelectorAll('#range-group button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#range-group button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentRange = btn.dataset.range;
+        fetchData();
+      });
+    });
+
+    // Chart type buttons
+    document.querySelectorAll('#chart-type-group button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#chart-type-group button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentChartType = btn.dataset.type;
+        fetchData();
+      });
+    });
+
+    // Enter key on input
+    document.getElementById('symbol').addEventListener('keydown', e => {
+      if (e.key === 'Enter') fetchData();
+    });
+
+    function initChart() {
+      const container = document.getElementById('chart-container');
+      container.innerHTML = '';
+
+      chart = LightweightCharts.createChart(container, {
+        width: container.clientWidth,
+        height: container.clientHeight,
+        layout: {
+          background: { type: 'solid', color: '#1a1a24' },
+          textColor: '#808090',
+          fontSize: 12,
+        },
+        grid: {
+          vertLines: { color: '#222233' },
+          horzLines: { color: '#222233' },
+        },
+        crosshair: {
+          mode: LightweightCharts.CrosshairMode.Normal,
+        },
+        rightPriceScale: {
+          borderColor: '#2a2a3a',
+        },
+        timeScale: {
+          borderColor: '#2a2a3a',
+          timeVisible: currentRange === '1d',
+        },
+      });
+
+      window.addEventListener('resize', () => {
+        chart.applyOptions({ width: container.clientWidth });
+      });
+    }
+
+    function toChartDate(dateStr) {
+      const d = new Date(dateStr);
+      if (currentRange === '1d') {
+        return Math.floor(d.getTime() / 1000);
+      }
+      return d.toISOString().split('T')[0];
+    }
+
+    async function fetchData() {
+      const symbol = document.getElementById('symbol').value.trim();
+      if (!symbol) return;
+
+      const btn = document.getElementById('fetch-btn');
+      const status = document.getElementById('status');
+      btn.disabled = true;
+      status.className = 'status';
+      status.textContent = 'Fetching...';
+
+      const url = `${API_BASE}/history/${symbol}?range=${currentRange}&chartType=${currentChartType}`;
+
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+
+        document.getElementById('raw-json').textContent = JSON.stringify(data, null, 2);
+
+        // Info bar
+        const changeClass = data.change_percent >= 0 ? 'positive' : 'negative';
+        const changeSign = data.change_percent >= 0 ? '+' : '';
+        document.getElementById('info-bar').innerHTML = `
+          <span>Symbol: <span class="value">${data.symbol}</span></span>
+          <span>Range: <span class="value">${data.range}</span></span>
+          <span>Type: <span class="value">${data.chartType}</span></span>
+          <span>Points: <span class="value">${data.count}</span></span>
+          <span>Change: <span class="value ${changeClass}">${changeSign}${data.change_percent.toFixed(2)}%</span></span>
+        `;
+
+        // Reverse history to ASC for the chart library
+        const history = [...data.history].reverse();
+
+        initChart();
+
+        if (currentChartType === 'candlestick') {
+          series = chart.addCandlestickSeries({
+            upColor: '#22c55e',
+            downColor: '#ef4444',
+            borderDownColor: '#ef4444',
+            borderUpColor: '#22c55e',
+            wickDownColor: '#ef4444',
+            wickUpColor: '#22c55e',
+          });
+
+          const candleData = history.map(d => ({
+            time: toChartDate(d.record_date),
+            open: parseFloat(d.open_price),
+            high: parseFloat(d.high_price),
+            low: parseFloat(d.low_price),
+            close: parseFloat(d.close_price),
+          }));
+
+          series.setData(candleData);
+        } else {
+          series = chart.addAreaSeries({
+            lineColor: '#5b5bf0',
+            topColor: 'rgba(91, 91, 240, 0.4)',
+            bottomColor: 'rgba(91, 91, 240, 0.05)',
+            lineWidth: 2,
+          });
+
+          const lineData = history.map(d => ({
+            time: toChartDate(d.record_date),
+            value: parseFloat(d.close_price),
+          }));
+
+          series.setData(lineData);
+        }
+
+        chart.timeScale().fitContent();
+        status.textContent = `Loaded ${data.count} data points in ${data.range} range (${data.chartType}) — ${new Date().toLocaleTimeString()}`;
+
+      } catch (err) {
+        status.className = 'status error';
+        status.textContent = `Error: ${err.message}`;
+        document.getElementById('raw-json').textContent = err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // Auto-load on page open
+    fetchData();
+  </script>
+</body>
+</html>

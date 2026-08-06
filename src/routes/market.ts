@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { pool } from '../db/pool';
+import { lttb } from '../utils/lttb';
 
 const router = Router();
 
@@ -80,25 +81,171 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
   res.json(result.rows[0]);
 }));
 
-// GET /api/history/:symbol?limit=30 - daily OHLCV history for a ticker
+// GET /api/history/:symbol?range=1m&chartType=line
 router.get('/history/:symbol', asyncHandler(async (req, res) => {
   const { symbol } = req.params;
-  const limit = clampLimit(req.query.limit, 30, 1000);
-  const result = await pool.query(
-    `SELECT hp."record_date", hp."open_price", hp."high_price", hp."low_price",
-            hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits"
-     FROM historical_prices hp
-     JOIN company_stock cs ON cs."FinInstrmId" = hp."FinInstrmId"
-     WHERE UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1
-     ORDER BY hp."record_date" DESC
-     LIMIT $2`,
-    [symbol, limit]
-  );
+  
+  const chartType = String(req.query.chartType || 'candlestick').toLowerCase();
+  if (!['line', 'candlestick'].includes(chartType)) {
+    res.status(400).json({ error: `Unsupported chartType '${chartType}'. Supported values: 'line', 'candlestick'.` });
+    return;
+  }
+  let rawRange = String(req.query.range || req.query.query || '1m').toLowerCase();
+  
+  // Custom date ranges
+  const startDate = req.query.start_date ? String(req.query.start_date) : null;
+  const endDate = req.query.end_date ? String(req.query.end_date) : null;
+
+  let timeFilter = '';
+  let durationDays = 30; // default for 1m
+  let range = rawRange;
+
+  if (startDate && endDate) {
+    range = 'custom';
+    timeFilter = `AND hp."record_date" >= $3 AND hp."record_date" <= $4`;
+    durationDays = (new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 3600 * 24);
+  } else {
+    // Determine range and rough duration for bucketing strategy
+    if (['d', '1d'].includes(rawRange)) { range = '1d'; durationDays = 1; }
+    else if (['w', '1w'].includes(rawRange)) { range = '1w'; durationDays = 7; }
+    else if (['m', '1m'].includes(rawRange)) { range = '1m'; durationDays = 30; }
+    else if (['y', '1y'].includes(rawRange)) { range = '1y'; durationDays = 365; }
+    else if (['5y'].includes(rawRange)) { range = '5y'; durationDays = 365 * 5; }
+    else if (['max'].includes(rawRange)) { range = 'max'; durationDays = 99999; }
+    else { range = '1m'; durationDays = 30; } // default fallback
+
+    if (range === '1d') {
+      timeFilter = `AND DATE(hp."record_date") = (
+        SELECT MAX(DATE("record_date"))
+        FROM historical_prices
+        WHERE "FinInstrmId" = cs."FinInstrmId"
+      )`;
+    } else if (range === '1w') {
+      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '7 days'`;
+    } else if (range === '1m') {
+      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '1 month'`;
+    } else if (range === '1y') {
+      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '1 year'`;
+    } else if (range === '5y') {
+      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '5 years'`;
+    }
+  }
+
+  const limit = clampLimit(req.query.limit, 10000, 50000);
+  const downsample = 100;
+  
+  let sql = '';
+  let queryParams: any[] = [symbol, limit];
+  if (range === 'custom') {
+    queryParams.push(startDate, endDate);
+  }
+
+  const isLineChart = chartType === 'line';
+  
+  if (isLineChart) {
+    // 2. Algorithmic Downsampling
+    // For line/area charts, fetch raw EOD data ordered ASC for LTTB downsampling
+    sql = `SELECT DISTINCT ON (DATE(hp."record_date")) 
+              hp."record_date", hp."open_price", hp."high_price", hp."low_price",
+              hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits"
+       FROM historical_prices hp
+       JOIN company_stock cs ON cs."FinInstrmId" = hp."FinInstrmId"
+       WHERE (UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1)
+         ${timeFilter}
+       ORDER BY DATE(hp."record_date") ASC, hp."record_date" DESC
+       LIMIT $2`;
+  } else {
+    // 1. Time-Based Bucketing
+    // Candlestick/Bar charts via native PostgreSQL Roll-up
+    if (durationDays < 365) {
+      // Duration < 1 Year: Raw Daily Data
+      sql = `SELECT DISTINCT ON (DATE(hp."record_date")) 
+                hp."record_date", hp."open_price", hp."high_price", hp."low_price",
+                hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits"
+         FROM historical_prices hp
+         JOIN company_stock cs ON cs."FinInstrmId" = hp."FinInstrmId"
+         WHERE (UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1)
+           ${timeFilter}
+         ORDER BY DATE(hp."record_date") DESC, hp."record_date" DESC
+         LIMIT $2`;
+    } else if (durationDays <= 365 * 5) {
+      // Duration 1 to 5 Years: Weekly Buckets
+      sql = `SELECT 
+                date_trunc('week', hp."record_date") as record_date,
+                (array_agg(hp."open_price" ORDER BY hp."record_date" ASC))[1] as open_price,
+                MAX(hp."high_price") as high_price,
+                MIN(hp."low_price") as low_price,
+                (array_agg(hp."close_price" ORDER BY hp."record_date" DESC))[1] as close_price,
+                SUM(hp."volume") as volume
+             FROM historical_prices hp
+             JOIN company_stock cs ON cs."FinInstrmId" = hp."FinInstrmId"
+             WHERE (UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1)
+               ${timeFilter}
+             GROUP BY date_trunc('week', hp."record_date")
+             ORDER BY record_date DESC
+             LIMIT $2`;
+    } else {
+      // Duration > 5 Years (or "max"): Monthly Buckets
+      sql = `SELECT 
+                date_trunc('month', hp."record_date") as record_date,
+                (array_agg(hp."open_price" ORDER BY hp."record_date" ASC))[1] as open_price,
+                MAX(hp."high_price") as high_price,
+                MIN(hp."low_price") as low_price,
+                (array_agg(hp."close_price" ORDER BY hp."record_date" DESC))[1] as close_price,
+                SUM(hp."volume") as volume
+             FROM historical_prices hp
+             JOIN company_stock cs ON cs."FinInstrmId" = hp."FinInstrmId"
+             WHERE (UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1)
+               ${timeFilter}
+             GROUP BY date_trunc('month', hp."record_date")
+             ORDER BY record_date DESC
+             LIMIT $2`;
+    }
+  }
+
+  const result = await pool.query(sql, queryParams);
+
   if (result.rows.length === 0) {
     res.status(404).json({ error: `No history found for symbol '${symbol}'` });
     return;
   }
-  res.json({ symbol: symbol.toUpperCase(), count: result.rows.length, history: result.rows });
+
+  let history = result.rows;
+
+  if (isLineChart) {
+    // Data is currently ASC. LTTB executes sequentially.
+    if (history.length > downsample) {
+      history = lttb(
+        history, 
+        downsample, 
+        (d) => new Date(d.record_date).getTime(),
+        (d) => Number(d.close_price)
+      );
+    }
+    // Reverse it back to DESC to match the API contract expected by frontend
+    history.reverse();
+  }
+
+  // Calculate percentage change
+  // Note: history is ordered DESC by date (newest first, oldest last)
+  const latestPrice = Number(history[0].close_price);
+  const oldestPrice = Number(history[history.length - 1].close_price);
+  const changePercent = oldestPrice ? ((latestPrice - oldestPrice) / oldestPrice) * 100 : 0;
+  
+  for (let i = 0; i < history.length; i++) {
+    const current = Number(history[i].close_price);
+    const prev = i < history.length - 1 ? Number(history[i+1].close_price) : current;
+    history[i].change_percent = prev ? ((current - prev) / prev) * 100 : 0;
+  }
+
+  res.json({ 
+    symbol: symbol.toUpperCase(), 
+    range,
+    chartType,
+    count: history.length, 
+    change_percent: changePercent,
+    history 
+  });
 }));
 
 // GET /api/stocks?search=reliance&limit=20 - search/list instruments
