@@ -139,11 +139,10 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
     else { range = '1m'; durationDays = 30; } // default fallback
 
     if (range === '1d') {
-      timeFilter = `AND DATE(hp."record_date") = (
-        SELECT MAX(DATE("record_date"))
-        FROM historical_prices
-        WHERE "FinInstrmId" = cs."FinInstrmId"
-      )`;
+      // Same shape as the other ranges (sargable >= against an interval) so
+      // this can use an index range scan instead of wrapping record_date in
+      // DATE() on both sides, which forced a full scan of the symbol's history.
+      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '1 day'`;
     } else if (range === '1w') {
       timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '7 days'`;
     } else if (range === '1m') {
@@ -165,11 +164,24 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
   }
 
   const isLineChart = chartType === 'line';
-  
+  // historical_prices gets a new intraday row roughly every 5 minutes during
+  // market hours (bseLiveSync), not just one EOD row per day — so 1D is the
+  // one range that must NOT collapse same-day rows down to a single bar.
+  const isIntraday = range === '1d';
+
   if (isLineChart) {
     // 2. Algorithmic Downsampling
     // For line/area charts, fetch raw EOD data ordered ASC for LTTB downsampling
-    sql = `SELECT DISTINCT ON (DATE(hp."record_date")) 
+    sql = isIntraday
+      ? `SELECT hp."record_date", hp."open_price", hp."high_price", hp."low_price",
+                hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits"
+         FROM historical_prices hp
+         JOIN company_stock cs ON cs."FinInstrmId" = hp."FinInstrmId"
+         WHERE (UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1)
+           ${timeFilter}
+         ORDER BY hp."record_date" ASC
+         LIMIT $2`
+      : `SELECT DISTINCT ON (DATE(hp."record_date"))
               hp."record_date", hp."open_price", hp."high_price", hp."low_price",
               hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits"
        FROM historical_prices hp
@@ -182,8 +194,17 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
     // 1. Time-Based Bucketing
     // Candlestick/Bar charts via native PostgreSQL Roll-up
     if (durationDays < 365) {
-      // Duration < 1 Year: Raw Daily Data
-      sql = `SELECT DISTINCT ON (DATE(hp."record_date")) 
+      // Duration < 1 Year: Raw Daily Data (or every intraday snapshot for 1D)
+      sql = isIntraday
+        ? `SELECT hp."record_date", hp."open_price", hp."high_price", hp."low_price",
+                  hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits"
+           FROM historical_prices hp
+           JOIN company_stock cs ON cs."FinInstrmId" = hp."FinInstrmId"
+           WHERE (UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1)
+             ${timeFilter}
+           ORDER BY hp."record_date" DESC
+           LIMIT $2`
+        : `SELECT DISTINCT ON (DATE(hp."record_date"))
                 hp."record_date", hp."open_price", hp."high_price", hp."low_price",
                 hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits"
          FROM historical_prices hp
@@ -250,19 +271,15 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
     history.reverse();
   }
 
-  // Calculate percentage change
-  // Note: history is ordered DESC by date (newest first, oldest last)
+  // Percentage change across the whole returned window, against the opening
+  // price of the earliest bar — same convention as /api/quote's ChangePercent.
+  // Note: history is ordered DESC by date (newest first, oldest last), so the
+  // earliest bar in the window sits at the end of the array.
   const latestPrice = Number(history[0].close_price);
-  const oldestPrice = Number(history[history.length - 1].close_price);
-  const changePercent = oldestPrice ? ((latestPrice - oldestPrice) / oldestPrice) * 100 : 0;
-  
-  for (let i = 0; i < history.length; i++) {
-    const current = Number(history[i].close_price);
-    const prev = i < history.length - 1 ? Number(history[i+1].close_price) : current;
-    history[i].change_percent = prev ? ((current - prev) / prev) * 100 : 0;
-  }
+  const earliestOpen = Number(history[history.length - 1].open_price);
+  const changePercent = earliestOpen ? ((latestPrice - earliestOpen) / earliestOpen) * 100 : 0;
 
-  res.json({ 
+  res.json({
     symbol: symbol.toUpperCase(), 
     range,
     chartType,
