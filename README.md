@@ -249,7 +249,7 @@ Stocks with the biggest jump in traded volume vs their weekly average, for the m
 
 ### `GET /api/quote/:symbol`
 
-Latest snapshot (price, traded volume/value, transaction count) for one instrument in the tracked watchlist (`company_stock`).
+Latest snapshot for one instrument in the tracked watchlist (`company_stock`). All price/volume/date fields are derived from that instrument's most recent day of data in `historical_prices` — `company_stock` is only used to resolve identity (`FinInstrmId`, `TckrSymb`, `FinInstrmNm`) and to match the `:symbol` lookup.
 
 `:symbol` matches (case-insensitive) against the ticker (`TckrSymb`, e.g. `ANDHRAPET`) **or** the numeric BSE scrip code (`FinInstrmId`, e.g. `500012`).
 
@@ -265,15 +265,10 @@ GET /api/quote/ANDHRAPET
   "FinInstrmId": "500012",
   "TckrSymb": "ANDHRAPET",
   "FinInstrmNm": "ANDHRA PETROCHEMICALS LTD.",
-  "ISIN": "INE714B01016",
-  "SctySrs": "...",
-  "Sgmt": "...",
   "LastPric": "...",
   "TtlTradgVol": "...",
   "TtlTrfVal": "...",
-  "TtlNbOfTxsExctd": "...",
   "TradDt": "2026-07-22",
-  "BizDt": "2026-07-22",
   "OpenPric": "...",
   "HighPric": "...",
   "LowPric": "...",
@@ -282,6 +277,12 @@ GET /api/quote/ANDHRAPET
   "ChangePercent": "..."
 }
 ```
+
+- `LastPric`/`ClosePric` — the latest day's close price from `historical_prices`.
+- `TtlTradgVol` — `SUM(volume)` across that latest day's `historical_prices` rows.
+- `TtlTrfVal` — approximated turnover, `TtlTradgVol × ClosePric` (`historical_prices` has no direct turnover column).
+- `TradDt` — the latest `record_date` found in `historical_prices` for this instrument (replaces the old separate `TradDt`/`BizDt`/`ISIN`/`SctySrs`/`Sgmt`/`TtlNbOfTxsExctd` fields, which are no longer returned).
+- If the instrument has no `historical_prices` rows yet (e.g. newly added to the watchlist, not yet backfilled), these fields come back `null`.
 
 **404** if the symbol/scrip code isn't in the tracked watchlist:
 ```json
