@@ -4,3 +4,5 @@ dist/
 *.log
 .claude/worktrees/
 .superpowers/
+output/
+output_consolidated/

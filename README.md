@@ -79,6 +79,8 @@ deploy/
 | `company_stock` | `sodhaniScrap` bootstrap from `companies.json` (a curated **BSE-only watchlist**, currently ~2,359 companies) + bhavcopy | `/api/quote`, `/api/history`, `/api/stocks` |
 | `historical_prices` | `sodhaniScrap` Yahoo Finance historical catch-up, keyed to the same watchlist | `/api/history` |
 | `bse_announcements` | `sodhaniScrap` incremental BSE announcements sync | `/api/announcements` |
+| `bse_indices` | `sodhaniScrap` BSE indices worker (master list of SENSEX + ~77 sectoral/thematic indices) | `/api/indices`, `/api/indices/:sccode/history` |
+| `bse_index_history` | `sodhaniScrap` BSE indices worker (unified daily-close + intraday-tick series) | `/api/indices`, `/api/indices/:sccode/history` |
 
 **Important scope note:** `bse_top_gainers_losers` and `bse_spurt_volume` cover the *entire* BSE live market — any listed stock can show up there. `company_stock`/`historical_prices` only cover the fixed watchlist in `sodhaniScrap`'s `companies.json` (`bse_only` list). So a ticker that appears in `/api/top-gainers` today (e.g. some small-cap that hit its circuit) may return `404` from `/api/quote` or `/api/history` if it isn't in that watchlist. This is expected — to fix it, the watchlist in `sodhaniScrap` itself would need to be expanded, not this API.
 
@@ -451,6 +453,78 @@ GET /api/static-stock?query=3BBLACKBIO
 **404** if the static JSON file isn't found in either output directory:
 ```json
 { "error": "Static JSON not found for 'FOO'" }
+```
+
+---
+
+### `GET /api/indices`
+
+Latest entry for every BSE index (SENSEX and ~77 sectoral/thematic indices). Each row is that
+index's daily bar — the row `sodhaniScrap`'s live poller rewrites every 10 minutes with the
+current value, previous close, and change — identified by `session` being `NULL` in the underlying
+`bse_index_history` table. `record_time` on this row is always midnight of the current day by
+convention; `updated_at` is the real freshness timestamp of the value.
+
+**Response**
+```json
+{
+  "count": 77,
+  "indices": [
+    {
+      "sccode": "16",
+      "scname": "BSE SENSEX",
+      "record_time": "2026-08-13T00:00:00.000Z",
+      "value": 77746.35,
+      "prev_close": 77966.35,
+      "change_val": -220.0,
+      "change_pct": -0.2822,
+      "updated_at": "2026-08-13T11:26:50.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### `GET /api/indices/:sccode/history`
+
+Historical or intraday series for a single BSE index.
+
+| Query param | Default | Notes |
+|---|---|---|
+| `range` | `1d` | One of `1d`, `1w`, `6m`, `1y`. An unrecognized value falls back to `1d`. |
+| `limit` | 5000 | Clamped to 20000. |
+
+`range=1d` returns intraday ticks (`session` = `preopen`/`regular`) captured today, anchored to the
+index's own most recent entry minus 24 hours — so `change_val`/`change_pct` are `null` on these
+rows (only the daily bar carries them). All other ranges return daily bars (`session` is `null`),
+since BSE's underlying feed only exposes per-minute ticks for the current trading day — `1w` will
+typically only have a handful of points (one per trading day in the window), which is expected, not
+a bug.
+
+**Examples**
+```
+GET /api/indices/16/history?range=1d
+GET /api/indices/16/history?range=1y
+```
+
+**Response**
+```json
+{
+  "sccode": "16",
+  "scname": "BSE SENSEX",
+  "range": "1d",
+  "count": 159,
+  "change_percent": -0.28,
+  "history": [
+    { "record_time": "2026-08-13T06:06:40.000Z", "value": 77801.55, "prev_close": null, "change_val": null, "change_pct": null, "session": "regular" }
+  ]
+}
+```
+
+**404** if `sccode` doesn't match any known index:
+```json
+{ "error": "Index '99999' not found" }
 ```
 
 ---

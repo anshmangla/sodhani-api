@@ -572,4 +572,83 @@ router.get('/metrics/:symbol', asyncHandler(async (req, res) => {
   res.json(metrics);
 }));
 
+// GET /api/indices - latest entry (daily bar) for every BSE index
+router.get('/indices', asyncHandler(async (_req, res) => {
+  const result = await pool.query(
+    `SELECT i."sccode", i."scname",
+            h."record_time", h."value", h."prev_close",
+            h."change_val", h."change_pct", h."updated_at"
+     FROM bse_indices i
+     JOIN LATERAL (
+       SELECT "record_time", "value", "prev_close", "change_val", "change_pct", "updated_at"
+       FROM bse_index_history
+       WHERE "sccode" = i."sccode" AND "session" IS NULL
+       ORDER BY "record_time" DESC
+       LIMIT 1
+     ) h ON TRUE
+     ORDER BY i."scname"`
+  );
+  res.json({ count: result.rows.length, indices: result.rows });
+}));
+
+const INDEX_RANGES: Record<string, { interval: string; intraday: boolean }> = {
+  '1d': { interval: '24 hours', intraday: true },
+  '1w': { interval: '7 days', intraday: false },
+  '6m': { interval: '6 months', intraday: false },
+  '1y': { interval: '1 year', intraday: false },
+};
+
+// GET /api/indices/:sccode/history?range=1d|1w|6m|1y
+// 1d serves intraday ticks (session NOT NULL); all other ranges serve daily
+// bars (session IS NULL) since BSE's feed only exposes per-minute ticks for
+// the current trading day.
+router.get('/indices/:sccode/history', asyncHandler(async (req, res) => {
+  const { sccode } = req.params;
+  const rawRange = String(req.query.range || '1d').toLowerCase();
+  const range = INDEX_RANGES[rawRange] ? rawRange : '1d';
+  const cfg = INDEX_RANGES[range];
+  const limit = clampLimit(req.query.limit, 5000, 20000);
+
+  const indexResult = await pool.query(
+    `SELECT "sccode", "scname" FROM bse_indices WHERE "sccode" = $1`,
+    [sccode]
+  );
+  if (indexResult.rows.length === 0) {
+    res.status(404).json({ error: `Index '${sccode}' not found` });
+    return;
+  }
+  const { scname } = indexResult.rows[0];
+
+  const sessionFilter = cfg.intraday ? `"session" IS NOT NULL` : `"session" IS NULL`;
+  const result = await pool.query(
+    `SELECT "record_time", "value", "prev_close", "change_val", "change_pct", "session"
+     FROM bse_index_history
+     WHERE "sccode" = $1
+       AND ${sessionFilter}
+       AND "record_time" >= (
+             SELECT MAX("record_time") FROM bse_index_history WHERE "sccode" = $1
+           ) - INTERVAL '${cfg.interval}'
+     ORDER BY "record_time" DESC
+     LIMIT $2`,
+    [sccode, limit]
+  );
+
+  const history = result.rows;
+  let changePercent = 0;
+  if (history.length > 0) {
+    const latestValue = Number(history[0].value);
+    const earliestValue = Number(history[history.length - 1].value);
+    changePercent = earliestValue ? ((latestValue - earliestValue) / earliestValue) * 100 : 0;
+  }
+
+  res.json({
+    sccode,
+    scname,
+    range,
+    count: history.length,
+    change_percent: changePercent,
+    history,
+  });
+}));
+
 export default router;
