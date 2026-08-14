@@ -572,21 +572,123 @@ router.get('/metrics/:symbol', asyncHandler(async (req, res) => {
   res.json(metrics);
 }));
 
-// GET /api/indices - latest entry (daily bar) for every BSE index
-router.get('/indices', asyncHandler(async (_req, res) => {
+// ── Indices: shared BSE/NSE plumbing ─────────────────────────────────────────
+//
+// BSE's bse_index_history separates daily bars from intraday ticks with
+// session IS NULL / IS NOT NULL. NSE's nse_index_history never sets session
+// (nseIndicesSync.ts writes it as NULL on every row) - there the daily bar
+// is written at midnight and intraday ticks at the feed's real timestamp, so
+// the discriminator is the time-of-day component of record_time instead.
+type IndexSrc = 'BSE' | 'NSE';
+
+const INDEX_SOURCES: Record<IndexSrc, {
+  indexTable: string;
+  idCol: string;
+  nameCol: string;
+  historyTable: string;
+  historyIdCol: string;
+  dailyFilter: string;
+  intradayFilter: string;
+  constituentsTable: string;
+  constituentsIdCol: string;
+  constituentsStockCol: string;
+}> = {
+  BSE: {
+    indexTable: 'bse_indices', idCol: 'sccode', nameCol: 'scname',
+    historyTable: 'bse_index_history', historyIdCol: 'sccode',
+    dailyFilter: `"session" IS NULL`, intradayFilter: `"session" IS NOT NULL`,
+    constituentsTable: 'bse_index_constituents', constituentsIdCol: 'sccode', constituentsStockCol: '"FinInstrmId"',
+  },
+  NSE: {
+    indexTable: 'nse_indices', idCol: 'symbol', nameCol: 'name',
+    historyTable: 'nse_index_history', historyIdCol: 'symbol',
+    dailyFilter: `"record_time"::time = '00:00:00'`, intradayFilter: `"record_time"::time <> '00:00:00'`,
+    constituentsTable: 'nse_index_constituents', constituentsIdCol: 'index_symbol', constituentsStockCol: 'stock_symbol',
+  },
+};
+
+// Parses ?src=; returns null when absent (both exchanges), undefined and
+// writes a 400 response when the value is unrecognized (caller must return).
+function parseSrcParam(res: Response, raw: unknown): IndexSrc | null | undefined {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const v = String(raw).toUpperCase();
+  if (v === 'BSE' || v === 'NSE') return v;
+  res.status(400).json({ error: `Invalid src '${raw}'. Expected 'bse' or 'nse'.` });
+  return undefined;
+}
+
+// Strips everything but letters/digits before comparing, so "NIFTY 50",
+// "NIFTY%2050", "nifty-50" and "NIFTY50" all resolve to the same index.
+function normalizeCodeExpr(expr: string): string {
+  return `UPPER(REGEXP_REPLACE(${expr}, '[^A-Za-z0-9]', '', 'g'))`;
+}
+
+async function resolveIndex(code: string, srcFilter: IndexSrc | null): Promise<{ src: IndexSrc; code: string; name: string } | null> {
+  const order: IndexSrc[] = srcFilter ? [srcFilter] : ['BSE', 'NSE'];
+  for (const src of order) {
+    const cfg = INDEX_SOURCES[src];
+    const r = await pool.query(
+      `SELECT "${cfg.idCol}" AS code, "${cfg.nameCol}" AS name
+       FROM ${cfg.indexTable}
+       WHERE ${normalizeCodeExpr(`"${cfg.idCol}"`)} = ${normalizeCodeExpr('$1')}
+       LIMIT 1`,
+      [code]
+    );
+    if (r.rows.length > 0) {
+      return { src, code: r.rows[0].code, name: r.rows[0].name };
+    }
+  }
+  return null;
+}
+
+// GET /api/indices?src=bse|nse - latest entry (daily bar) for every index.
+// Rows are tagged src; BSE rows also keep sccode/scname for back-compat.
+router.get('/indices', asyncHandler(async (req, res) => {
+  const src = parseSrcParam(res, req.query.src);
+  if (src === undefined) return;
+
+  const branches: string[] = [];
+  if (src === null || src === 'NSE') {
+    branches.push(`
+      SELECT 'NSE' AS src, n."symbol" AS code, n."name" AS name,
+             NULL::varchar AS sccode, NULL::varchar AS scname,
+             h."record_time", h."value", h."prev_close",
+             h."change_val", h."change_pct",
+             h."advances", h."declines", h."unchanged",
+             h."updated_at"
+      FROM nse_indices n
+      JOIN LATERAL (
+        SELECT "record_time", "value", "prev_close", "change_val", "change_pct",
+               "advances", "declines", "unchanged", "updated_at"
+        FROM nse_index_history
+        WHERE "symbol" = n."symbol" AND "record_time"::time = '00:00:00'
+        ORDER BY "record_time" DESC
+        LIMIT 1
+      ) h ON TRUE
+    `);
+  }
+  if (src === null || src === 'BSE') {
+    branches.push(`
+      SELECT 'BSE' AS src, i."sccode" AS code, i."scname" AS name,
+             i."sccode" AS sccode, i."scname" AS scname,
+             h."record_time", h."value", h."prev_close",
+             h."change_val", h."change_pct",
+             NULL::int AS advances, NULL::int AS declines, NULL::int AS unchanged,
+             h."updated_at"
+      FROM bse_indices i
+      JOIN LATERAL (
+        SELECT "record_time", "value", "prev_close", "change_val", "change_pct", "updated_at"
+        FROM bse_index_history
+        WHERE "sccode" = i."sccode" AND "session" IS NULL
+        ORDER BY "record_time" DESC
+        LIMIT 1
+      ) h ON TRUE
+    `);
+  }
+
   const result = await pool.query(
-    `SELECT i."sccode", i."scname",
-            h."record_time", h."value", h."prev_close",
-            h."change_val", h."change_pct", h."updated_at"
-     FROM bse_indices i
-     JOIN LATERAL (
-       SELECT "record_time", "value", "prev_close", "change_val", "change_pct", "updated_at"
-       FROM bse_index_history
-       WHERE "sccode" = i."sccode" AND "session" IS NULL
-       ORDER BY "record_time" DESC
-       LIMIT 1
-     ) h ON TRUE
-     ORDER BY i."scname"`
+    `SELECT * FROM (${branches.join(' UNION ALL ')}) combined
+     ORDER BY CASE WHEN src = 'NSE' THEN 0 ELSE 1 END, name`
   );
   res.json({ count: result.rows.length, indices: result.rows });
 }));
@@ -598,39 +700,46 @@ const INDEX_RANGES: Record<string, { interval: string; intraday: boolean }> = {
   '1y': { interval: '1 year', intraday: false },
 };
 
-// GET /api/indices/:sccode/history?range=1d|1w|6m|1y
-// 1d serves intraday ticks (session NOT NULL); all other ranges serve daily
-// bars (session IS NULL) since BSE's feed only exposes per-minute ticks for
-// the current trading day.
-router.get('/indices/:sccode/history', asyncHandler(async (req, res) => {
-  const { sccode } = req.params;
+// GET /api/indices/:code/history?range=1d|1w|6m|1y&src=bse|nse
+// :code auto-resolves to a BSE or NSE index (BSE codes are numeric, NSE
+// codes all start with "NIFTY", so there is no collision); ?src= disambiguates
+// explicitly if ever needed. 1d serves intraday ticks; all other ranges serve
+// daily bars.
+router.get('/indices/:code/history', asyncHandler(async (req, res) => {
+  const { code } = req.params;
+  const srcParam = parseSrcParam(res, req.query.src);
+  if (srcParam === undefined) return;
+
   const rawRange = String(req.query.range || '1d').toLowerCase();
   const range = INDEX_RANGES[rawRange] ? rawRange : '1d';
   const cfg = INDEX_RANGES[range];
   const limit = clampLimit(req.query.limit, 5000, 20000);
 
-  const indexResult = await pool.query(
-    `SELECT "sccode", "scname" FROM bse_indices WHERE "sccode" = $1`,
-    [sccode]
-  );
-  if (indexResult.rows.length === 0) {
-    res.status(404).json({ error: `Index '${sccode}' not found` });
+  const resolved = await resolveIndex(code, srcParam ?? null);
+  if (!resolved) {
+    res.status(404).json({ error: `Index '${code}' not found` });
     return;
   }
-  const { scname } = indexResult.rows[0];
+  const { src, code: resolvedCode, name } = resolved;
+  const source = INDEX_SOURCES[src];
 
-  const sessionFilter = cfg.intraday ? `"session" IS NOT NULL` : `"session" IS NULL`;
+  const sessionFilter = cfg.intraday ? source.intradayFilter : source.dailyFilter;
+  const breadthCols = src === 'NSE'
+    ? `"advances", "declines", "unchanged"`
+    : `NULL::int AS advances, NULL::int AS declines, NULL::int AS unchanged`;
+
   const result = await pool.query(
-    `SELECT "record_time", "value", "prev_close", "change_val", "change_pct", "session"
-     FROM bse_index_history
-     WHERE "sccode" = $1
+    `SELECT "record_time", "value", "prev_close", "change_val", "change_pct", "session", ${breadthCols}
+     FROM ${source.historyTable}
+     WHERE "${source.historyIdCol}" = $1
        AND ${sessionFilter}
        AND "record_time" >= (
-             SELECT MAX("record_time") FROM bse_index_history WHERE "sccode" = $1
+             SELECT MAX("record_time") FROM ${source.historyTable}
+             WHERE "${source.historyIdCol}" = $1 AND ${sessionFilter}
            ) - INTERVAL '${cfg.interval}'
      ORDER BY "record_time" DESC
      LIMIT $2`,
-    [sccode, limit]
+    [resolvedCode, limit]
   );
 
   const history = result.rows;
@@ -642,12 +751,65 @@ router.get('/indices/:sccode/history', asyncHandler(async (req, res) => {
   }
 
   res.json({
-    sccode,
-    scname,
+    src,
+    code: resolvedCode,
+    name,
+    sccode: src === 'BSE' ? resolvedCode : null,
+    scname: src === 'BSE' ? name : null,
     range,
     count: history.length,
     change_percent: changePercent,
     history,
+  });
+}));
+
+// GET /api/indices/:code/constituents?src=bse|nse
+// Member stocks for a BSE or NSE index, joined to company_stock and each
+// stock's latest historical_prices row for LTP/day-change. BSE membership
+// (bse_index_constituents) is capped at 30 by the upstream heatmap feed for
+// indices with more members - callers should not assume completeness for
+// broad indices like BSE 500/1000.
+router.get('/indices/:code/constituents', asyncHandler(async (req, res) => {
+  const { code } = req.params;
+  const srcParam = parseSrcParam(res, req.query.src);
+  if (srcParam === undefined) return;
+
+  const resolved = await resolveIndex(code, srcParam ?? null);
+  if (!resolved) {
+    res.status(404).json({ error: `Index '${code}' not found` });
+    return;
+  }
+  const { src, code: resolvedCode, name } = resolved;
+  const source = INDEX_SOURCES[src];
+
+  const result = await pool.query(
+    `SELECT cs."FinInstrmId", cs."TckrSymb", cs."FinInstrmNm",
+            hp_latest."close_price" AS last_price,
+            CASE WHEN hp_latest."open_price"::float > 0
+              THEN ((hp_latest."close_price"::float - hp_latest."open_price"::float) / hp_latest."open_price"::float) * 100
+              ELSE 0
+            END AS change_percent,
+            hp_latest."volume"
+     FROM ${source.constituentsTable} c
+     JOIN company_stock cs ON cs."FinInstrmId" = c.${source.constituentsStockCol}
+     LEFT JOIN LATERAL (
+       SELECT open_price, close_price, volume
+       FROM historical_prices hp
+       WHERE hp."FinInstrmId" = cs."FinInstrmId"
+       ORDER BY record_date DESC
+       LIMIT 1
+     ) hp_latest ON TRUE
+     WHERE c."${source.constituentsIdCol}" = $1
+     ORDER BY change_percent DESC NULLS LAST`,
+    [resolvedCode]
+  );
+
+  res.json({
+    src,
+    code: resolvedCode,
+    name,
+    count: result.rows.length,
+    constituents: result.rows,
   });
 }));
 

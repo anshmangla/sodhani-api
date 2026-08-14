@@ -79,8 +79,12 @@ deploy/
 | `company_stock` | `sodhaniScrap` bootstrap from `companies.json` (a curated **BSE-only watchlist**, currently ~2,359 companies) + bhavcopy | `/api/quote`, `/api/history`, `/api/stocks` |
 | `historical_prices` | `sodhaniScrap` Yahoo Finance historical catch-up, keyed to the same watchlist | `/api/history` |
 | `bse_announcements` | `sodhaniScrap` incremental BSE announcements sync | `/api/announcements` |
-| `bse_indices` | `sodhaniScrap` BSE indices worker (master list of SENSEX + ~77 sectoral/thematic indices) | `/api/indices`, `/api/indices/:sccode/history` |
-| `bse_index_history` | `sodhaniScrap` BSE indices worker (unified daily-close + intraday-tick series) | `/api/indices`, `/api/indices/:sccode/history` |
+| `bse_indices` | `sodhaniScrap` BSE indices worker (master list of SENSEX + ~77 sectoral/thematic indices) | `/api/indices`, `/api/indices/:code/history` |
+| `bse_index_history` | `sodhaniScrap` BSE indices worker (unified daily-close + intraday-tick series) | `/api/indices`, `/api/indices/:code/history` |
+| `bse_index_constituents` | `sodhaniScrap` BSE index constituents sync (BSE HeatMapData feed, capped at 30 rows/index upstream) | `/api/indices/:code/constituents` |
+| `nse_indices` | `sodhaniScrap` NSE indices worker (NIFTY 50, BANK, FIN SERVICE, FPI 150, MID SELECT, NEXT 50) | `/api/indices`, `/api/indices/:code/history` |
+| `nse_index_history` | `sodhaniScrap` NSE indices worker (daily-close + intraday-tick series, plus market breadth) | `/api/indices`, `/api/indices/:code/history` |
+| `nse_index_constituents` | `sodhaniScrap` NSE indices worker (full constituent list per index) | `/api/indices/:code/constituents` |
 
 **Important scope note:** `bse_top_gainers_losers` and `bse_spurt_volume` cover the *entire* BSE live market — any listed stock can show up there. `company_stock`/`historical_prices` only cover the fixed watchlist in `sodhaniScrap`'s `companies.json` (`bse_only` list). So a ticker that appears in `/api/top-gainers` today (e.g. some small-cap that hit its circuit) may return `404` from `/api/quote` or `/api/history` if it isn't in that watchlist. This is expected — to fix it, the watchlist in `sodhaniScrap` itself would need to be expanded, not this API.
 
@@ -459,18 +463,46 @@ GET /api/static-stock?query=3BBLACKBIO
 
 ### `GET /api/indices`
 
-Latest entry for every BSE index (SENSEX and ~77 sectoral/thematic indices). Each row is that
-index's daily bar — the row `sodhaniScrap`'s live poller rewrites every 10 minutes with the
-current value, previous close, and change — identified by `session` being `NULL` in the underlying
-`bse_index_history` table. `record_time` on this row is always midnight of the current day by
-convention; `updated_at` is the real freshness timestamp of the value.
+Latest entry for every index across **both exchanges** — BSE (SENSEX + ~77 sectoral/thematic
+indices) and NSE (NIFTY 50, BANK, FIN SERVICE, FPI 150, MID SELECT, NEXT 50). Each row is that
+index's daily bar, identified by `src`. NSE rows sort first, then alphabetically by name.
+
+| Query param | Default | Notes |
+|---|---|---|
+| `src` | *(both)* | `bse` or `nse` to filter to one exchange. Any other value returns `400`. |
+
+BSE rows also carry the legacy `sccode`/`scname` fields for back-compat. NSE rows carry live
+market-breadth counts (`advances`/`declines`/`unchanged`) that BSE does not have; BSE rows carry
+`prev_close`/`change_val`/`change_pct` refreshed every 10 minutes by `sodhaniScrap`'s live poller,
+identified by `session` being `NULL` in the underlying `bse_index_history` table. `record_time` on
+a daily-bar row is always midnight of the current day by convention; `updated_at` is the real
+freshness timestamp.
 
 **Response**
 ```json
 {
-  "count": 77,
+  "count": 83,
   "indices": [
     {
+      "src": "NSE",
+      "code": "NIFTY 50",
+      "name": "NIFTY 50",
+      "sccode": null,
+      "scname": null,
+      "record_time": "2026-08-14T04:39:59.000Z",
+      "value": 24366.00,
+      "prev_close": 24395.85,
+      "change_val": -29.85,
+      "change_pct": -0.12,
+      "advances": 10,
+      "declines": 39,
+      "unchanged": 1,
+      "updated_at": "2026-08-14T14:10:36.182Z"
+    },
+    {
+      "src": "BSE",
+      "code": "16",
+      "name": "BSE SENSEX",
       "sccode": "16",
       "scname": "BSE SENSEX",
       "record_time": "2026-08-13T00:00:00.000Z",
@@ -478,6 +510,9 @@ convention; `updated_at` is the real freshness timestamp of the value.
       "prev_close": 77966.35,
       "change_val": -220.0,
       "change_pct": -0.2822,
+      "advances": null,
+      "declines": null,
+      "unchanged": null,
       "updated_at": "2026-08-13T11:26:50.000Z"
     }
   ]
@@ -486,46 +521,100 @@ convention; `updated_at` is the real freshness timestamp of the value.
 
 ---
 
-### `GET /api/indices/:sccode/history`
+### `GET /api/indices/:code/history`
 
-Historical or intraday series for a single BSE index.
+Historical or intraday series for a single index, either exchange.
 
 | Query param | Default | Notes |
 |---|---|---|
 | `range` | `1d` | One of `1d`, `1w`, `6m`, `1y`. An unrecognized value falls back to `1d`. |
 | `limit` | 5000 | Clamped to 20000. |
+| `src` | *(auto)* | `bse` or `nse` to disambiguate explicitly. Normally unnecessary — see below. |
 
-`range=1d` returns intraday ticks (`session` = `preopen`/`regular`) captured today, anchored to the
-index's own most recent entry minus 24 hours — so `change_val`/`change_pct` are `null` on these
-rows (only the daily bar carries them). All other ranges return daily bars (`session` is `null`),
-since BSE's underlying feed only exposes per-minute ticks for the current trading day — `1w` will
-typically only have a handful of points (one per trading day in the window), which is expected, not
-a bug.
+`:code` auto-resolves against both exchanges: BSE codes are numeric (`16`), NSE codes are index
+names (`NIFTY 50`) and are matched case- and punctuation-insensitively, so `NIFTY%2050`,
+`nifty-50`, and `NIFTY50` all resolve to the same index. There is no collision risk between the
+two code spaces.
+
+`range=1d` returns intraday ticks captured today, anchored to the index's own most recent entry
+minus 24 hours. For BSE this is rows with `session` = `preopen`/`regular`; for NSE (which never
+sets `session`) it's rows whose `record_time` isn't exactly midnight. `change_val`/`change_pct`
+are `null` on BSE intraday rows (only the daily bar carries them); NSE rows carry them throughout.
+All other ranges return daily bars — `1w` will typically only have a handful of points (one per
+trading day in the window), which is expected, not a bug.
 
 **Examples**
 ```
-GET /api/indices/16/history?range=1d
 GET /api/indices/16/history?range=1y
+GET /api/indices/NIFTY%2050/history?range=1d
+GET /api/indices/nifty-50/history?range=1d&src=nse
 ```
 
 **Response**
 ```json
 {
+  "src": "BSE",
+  "code": "16",
+  "name": "BSE SENSEX",
   "sccode": "16",
   "scname": "BSE SENSEX",
   "range": "1d",
   "count": 159,
   "change_percent": -0.28,
   "history": [
-    { "record_time": "2026-08-13T06:06:40.000Z", "value": 77801.55, "prev_close": null, "change_val": null, "change_pct": null, "session": "regular" }
+    { "record_time": "2026-08-13T06:06:40.000Z", "value": 77801.55, "prev_close": null, "change_val": null, "change_pct": null, "session": "regular", "advances": null, "declines": null, "unchanged": null }
   ]
 }
 ```
 
-**404** if `sccode` doesn't match any known index:
+**404** if `:code` doesn't match any known index on either exchange:
 ```json
 { "error": "Index '99999' not found" }
 ```
+
+---
+
+### `GET /api/indices/:code/constituents`
+
+Member stocks for a single index, either exchange, joined to `company_stock` and each stock's
+latest `historical_prices` row for last price / day change / volume. Same `:code` auto-resolution
+and `?src=` override as the history route. Results are ordered by `change_percent` descending.
+
+**BSE coverage caveat:** `bse_index_constituents` is scraped from BSE's public heatmap feed, which
+always returns exactly 30 rows per index. For indices with 30 or fewer members (SENSEX, BANKEX,
+the sectoral indices) this is the complete list. For broader indices (BSE 500, BSE 1000, …) it is
+only that day's 30 biggest movers — **not** the full membership — and grows/rotates across sync
+runs rather than representing a stable complete set. NSE constituents (`nse_index_constituents`)
+have no such cap.
+
+**Examples**
+```
+GET /api/indices/16/constituents
+GET /api/indices/NIFTY%2050/constituents
+```
+
+**Response**
+```json
+{
+  "src": "BSE",
+  "code": "16",
+  "name": "BSE SENSEX",
+  "count": 30,
+  "constituents": [
+    {
+      "FinInstrmId": "500820",
+      "TckrSymb": "ASIANPAINT",
+      "FinInstrmNm": "Asian Paints Ltd",
+      "last_price": 2710.00,
+      "change_percent": -1.69,
+      "volume": 20722
+    }
+  ]
+}
+```
+
+`count: 0` (not an error) if the index exists but has no synced membership yet. **404** if `:code`
+doesn't match any known index.
 
 ---
 
