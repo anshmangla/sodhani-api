@@ -881,6 +881,29 @@ Summary stats for the authenticated RA.
 
 ---
 
+#### `GET /api/ra/dashboard/earnings`
+
+Route transfer earnings for the authenticated RA — money transferred to
+their Razorpay linked account (not settlement-to-bank status). Sourced from
+the `ra_transfers` table, populated by the `transfer.processed` /
+`transfer.failed` webhook handlers in `paymentsWebhook.ts`. No historical
+backfill — only reflects transfers received after this feature shipped.
+
+**Response** `200`
+```json
+{
+  "earnings": { "total_paise": 45000, "this_month_paise": 9000, "this_year_paise": 45000, "failed_transfer_count": 1 },
+  "recent_payouts": [
+    { "amount_paise": 4500, "processed_at": "2026-08-15T10:00:00.000Z", "call_id": "...", "company_name": "Reliance Industries Ltd.", "recommendation": "Buy" }
+  ],
+  "by_call": [
+    { "call_id": "...", "company_name": "Reliance Industries Ltd.", "recommendation": "Buy", "total_paise": 9000, "count": 2 }
+  ]
+}
+```
+
+---
+
 #### `POST /api/ra/calls/:id/comments`
 
 Adds a comment/update to a call owned by the authenticated RA.

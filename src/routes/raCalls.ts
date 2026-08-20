@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { pool } from '../db/pool';
 import { requireRaAuth } from '../auth/raMiddleware';
 import { searchCompanies } from '../data/companies';
+import { getEarningsSummary, getRecentPayouts, getEarningsByCall } from '../services/raTransfersService';
 
 const router = Router();
 
@@ -129,6 +130,38 @@ router.get('/dashboard', requireRaAuth, asyncHandler(async (req, res) => {
     [req.authRaId]
   );
   res.status(200).json({ dashboard: result.rows[0] });
+}));
+
+// GET /api/ra/dashboard/earnings
+router.get('/dashboard/earnings', requireRaAuth, asyncHandler(async (req, res) => {
+  const raId = req.authRaId as string;
+  const [summary, recentPayouts, byCall] = await Promise.all([
+    getEarningsSummary(raId),
+    getRecentPayouts(raId, 20),
+    getEarningsByCall(raId),
+  ]);
+  res.status(200).json({
+    earnings: {
+      total_paise: summary.totalPaise,
+      this_month_paise: summary.thisMonthPaise,
+      this_year_paise: summary.thisYearPaise,
+      failed_transfer_count: summary.failedTransferCount,
+    },
+    recent_payouts: recentPayouts.map((p) => ({
+      amount_paise: p.amountPaise,
+      processed_at: p.processedAt,
+      call_id: p.callId,
+      company_name: p.companyName,
+      recommendation: p.recommendation,
+    })),
+    by_call: byCall.map((c) => ({
+      call_id: c.callId,
+      company_name: c.companyName,
+      recommendation: c.recommendation,
+      total_paise: c.totalPaise,
+      count: c.count,
+    })),
+  });
 }));
 
 // POST /api/ra/calls/:id/comments
