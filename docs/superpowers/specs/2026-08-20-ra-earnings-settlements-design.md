@@ -36,9 +36,14 @@ failure.
 
 ## Non-goals
 
-- Settlement-to-bank tracking/display (the `settlement.processed` webhook
-  stays log-only for now; only `transfer.processed`/`transfer.failed` are
-  wired up).
+- ~~Settlement-to-bank tracking/display~~ — superseded 2026-08-21: real
+  settlement tracking was added. `settlement.processed` now cross-references
+  `instance.transfers.all({ recipient_settlement_id })` (Razorpay's webhook
+  payload only identifies the settlement, not which transfers it covers) and
+  marks the matching `ra_transfers` rows `settlement_status = 'settled'`. See
+  migration `0006_ra_transfer_settlements.sql`. Earnings totals are
+  unchanged — still "transferred," not "settled" — this only adds a
+  per-payout settlement indicator on top.
 - Historical backfill of transfers that occurred before this ships — explicitly
   confirmed out of scope. Earnings start accruing from ship date forward.
 - Any change to the actual transfer/split logic in `razorpayService.ts` or

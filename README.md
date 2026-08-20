@@ -117,6 +117,7 @@ psql "$DATABASE_URL" -f db/migrations/0002_research_analysts.sql     # creates t
 psql "$DATABASE_URL" -f db/migrations/0003_research_calls.sql        # creates research_calls, call_comments, payments, purchased_calls
 psql "$DATABASE_URL" -f db/migrations/0004_ra_onboarding.sql         # renames username to email, adds razorpay_account_id/razorpay_stakeholder_id/onboarding_status to research_analysts
 psql "$DATABASE_URL" -f db/migrations/0005_ra_transfers.sql          # creates ra_transfers (RA payout ledger)
+psql "$DATABASE_URL" -f db/migrations/0006_ra_transfer_settlements.sql # adds settlement_status/razorpay_settlement_id/razorpay_settlement_utr/settled_at to ra_transfers
 npm run seed:ra          # creates dummy RA dev accounts (see scripts/seed-research-analysts.ts)
 npm run dev              # runs src/index.ts directly via ts-node
 ```

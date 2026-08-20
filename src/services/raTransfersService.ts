@@ -103,11 +103,12 @@ export type PayoutRow = {
   callId: string;
   companyName: string;
   recommendation: string;
+  settlementStatus: 'pending' | 'settled';
 };
 
 export async function getRecentPayouts(raId: string, limit: number): Promise<PayoutRow[]> {
   const result = await pool.query(
-    `SELECT rt.amount_paise, rt.processed_at, rt.call_id, rc.company_name, rc.recommendation
+    `SELECT rt.amount_paise, rt.processed_at, rt.call_id, rc.company_name, rc.recommendation, rt.settlement_status
      FROM ra_transfers rt
      JOIN research_calls rc ON rc.id = rt.call_id
      WHERE rt.ra_id = $1 AND rt.status = 'processed' AND rt.processed_at IS NOT NULL
@@ -121,7 +122,32 @@ export async function getRecentPayouts(raId: string, limit: number): Promise<Pay
     callId: row.call_id,
     companyName: row.company_name,
     recommendation: row.recommendation,
+    settlementStatus: row.settlement_status,
   }));
+}
+
+// Marks every ra_transfers row behind this settlement as settled. Transfer
+// IDs come from the Transfers API (see listTransfersForSettlement) since the
+// settlement.processed webhook payload doesn't list them itself. A transfer
+// ID with no matching row (e.g. not ours, or the transfer.processed webhook
+// hasn't landed yet) is silently skipped rather than treated as an error.
+export async function recordTransfersSettled(
+  transferIds: string[],
+  settlementId: string,
+  settledAtEpochSeconds: number,
+  utr: string | null
+): Promise<void> {
+  if (transferIds.length === 0) return;
+  await pool.query(
+    `UPDATE ra_transfers
+     SET settlement_status = 'settled',
+         razorpay_settlement_id = $2,
+         razorpay_settlement_utr = $3,
+         settled_at = to_timestamp($4),
+         updated_at = now()
+     WHERE razorpay_transfer_id = ANY($1) AND status = 'processed'`,
+    [transferIds, settlementId, utr, settledAtEpochSeconds]
+  );
 }
 
 export type CallEarningsRow = {

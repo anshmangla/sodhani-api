@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { verifyWebhookSignature } from '../services/razorpayService';
+import { verifyWebhookSignature, listTransfersForSettlement } from '../services/razorpayService';
 import { completePurchase } from '../services/purchaseService';
-import { recordTransferProcessed, recordTransferFailed } from '../services/raTransfersService';
+import { recordTransferProcessed, recordTransferFailed, recordTransfersSettled } from '../services/raTransfersService';
 import { pool } from '../db/pool';
 
 const router = Router();
@@ -81,7 +81,21 @@ router.post('/', asyncHandler(async (req, res) => {
   }
 
   if (event.event === 'settlement.processed') {
-    console.log('[payments/webhook] Settlement processed to bank account for amount:', event.payload.settlement.entity.amount);
+    const entity = event.payload.settlement.entity;
+    console.log('[payments/webhook] Settlement processed to bank account for amount:', entity.amount);
+    try {
+      const transfers = await listTransfersForSettlement(entity.id);
+      const transferIds = transfers.map((t) => t.id);
+      await recordTransfersSettled(
+        transferIds,
+        entity.id,
+        entity.processed_at ?? entity.created_at,
+        entity.utr ?? null
+      );
+      console.log(`[payments/webhook] Marked ${transferIds.length} transfer(s) settled for settlement ${entity.id}`);
+    } catch (err) {
+      console.error('[payments/webhook] recordTransfersSettled failed:', err);
+    }
     res.status(200).json({ received: true });
     return;
   }

@@ -63,6 +63,14 @@ export async function createStakeholder(accountId: string, data: any): Promise<a
   return await instance.stakeholders.create(accountId, data);
 }
 
+// The settlement.processed webhook only identifies the settlement, not which
+// transfers it covers, so we look those up via the Transfers API.
+export async function listTransfersForSettlement(settlementId: string): Promise<any[]> {
+  const instance = getRazorpayInstance();
+  const result = await instance.transfers.all({ recipient_settlement_id: settlementId });
+  return result.items;
+}
+
 export async function requestProductConfig(accountId: string, data: any): Promise<any> {
   const instance = getRazorpayInstance();
   return await instance.products.requestProductConfiguration(accountId, data);

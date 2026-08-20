@@ -153,6 +153,7 @@ router.get('/dashboard/earnings', requireRaAuth, asyncHandler(async (req, res) =
       call_id: p.callId,
       company_name: p.companyName,
       recommendation: p.recommendation,
+      settlement_status: p.settlementStatus,
     })),
     by_call: byCall.map((c) => ({
       call_id: c.callId,
