@@ -105,6 +105,70 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
   res.json(result.rows[0]);
 }));
 
+const MAX_BATCH_QUOTE_CODES = 50;
+
+// GET /api/quotes?codes=500325,532540,RELIANCE - same row shape as
+// /api/quote/:symbol for each requested ticker/scrip code, batched into one
+// round trip. Unknown codes are silently omitted rather than 404ing the
+// whole request - callers diff the requested list against `quotes` to see
+// what didn't resolve.
+router.get('/quotes', asyncHandler(async (req, res) => {
+  const raw = String(req.query.codes ?? '');
+  const codes = Array.from(
+    new Set(
+      raw
+        .split(',')
+        .map((c) => c.trim())
+        .filter((c) => c.length > 0)
+    )
+  ).slice(0, MAX_BATCH_QUOTE_CODES);
+
+  if (codes.length === 0) {
+    res.status(400).json({ error: "Query param 'codes' is required (comma-separated ticker symbols or scrip codes)." });
+    return;
+  }
+
+  const upperCodes = codes.map((c) => c.toUpperCase());
+
+  const result = await pool.query(
+    `SELECT cs."FinInstrmId", cs."TckrSymb", cs."FinInstrmNm",
+            hp_latest."true_close" AS "LastPric",
+            hp_latest."true_volume" AS "TtlTradgVol",
+            (hp_latest."true_volume"::float * hp_latest."true_close"::float) AS "TtlTrfVal",
+            hp_latest."true_date" AS "TradDt",
+            hp_latest."true_open" AS "OpenPric",
+            hp_latest."true_high" AS "HighPric",
+            hp_latest."true_low" AS "LowPric",
+            hp_latest."true_close" AS "ClosePric",
+            (hp_latest."true_close"::float - hp_latest."true_open"::float) AS "ChangeVal",
+            CASE WHEN hp_latest."true_open"::float > 0
+              THEN ((hp_latest."true_close"::float - hp_latest."true_open"::float) / hp_latest."true_open"::float) * 100
+              ELSE 0
+            END AS "ChangePercent"
+     FROM company_stock cs
+     LEFT JOIN LATERAL (
+       SELECT
+         MAX(record_date) as true_date,
+         (array_agg(open_price ORDER BY record_date ASC))[1] as true_open,
+         MAX(high_price) as true_high,
+         MIN(low_price) as true_low,
+         (array_agg(close_price ORDER BY record_date DESC))[1] as true_close,
+         SUM(volume) as true_volume
+       FROM historical_prices hp
+       WHERE hp."FinInstrmId" = cs."FinInstrmId"
+         AND DATE(hp.record_date) = (
+           SELECT MAX(DATE(record_date))
+           FROM historical_prices
+           WHERE "FinInstrmId" = cs."FinInstrmId"
+         )
+     ) hp_latest ON true
+     WHERE UPPER(cs."TckrSymb") = ANY($1) OR cs."FinInstrmId"::text = ANY($2)`,
+    [upperCodes, codes]
+  );
+
+  res.json({ count: result.rows.length, quotes: result.rows });
+}));
+
 // GET /api/history/:symbol?range=1m&chartType=line
 router.get('/history/:symbol', asyncHandler(async (req, res) => {
   const { symbol } = req.params;

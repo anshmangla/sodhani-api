@@ -77,9 +77,12 @@ deploy/
 |---|---|---|
 | `bse_top_gainers_losers` | `sodhaniScrap` live poll of BSE's full market gainers/losers feed | `/api/top-gainers`, `/api/top-losers` |
 | `bse_spurt_volume` | `sodhaniScrap` live poll of BSE's spurt-volume feed | `/api/volume-shockers` |
-| `company_stock` | `sodhaniScrap` bootstrap from `companies.json` (a curated **BSE-only watchlist**, currently ~2,359 companies) + bhavcopy | `/api/quote`, `/api/history`, `/api/stocks` |
+| `company_stock` | `sodhaniScrap` bootstrap from `companies.json` (a curated **BSE-only watchlist**, currently ~2,359 companies) + bhavcopy | `/api/quote`, `/api/quotes`, `/api/history`, `/api/stocks` |
 | `historical_prices` | `sodhaniScrap` Yahoo Finance historical catch-up, keyed to the same watchlist | `/api/history` |
-| `bse_announcements` | `sodhaniScrap` incremental BSE announcements sync | `/api/announcements` |
+| `bse_announcements` | `sodhaniScrap` incremental BSE announcements sync | `/api/announcements/:symbol` |
+| `stock_metrics` | `sodhaniScrap` nightly valuation/profitability worker | `/api/screener`, `/api/metrics/:symbol` |
+| `technical_analysis` | `sodhaniScrap` nightly technical-indicator worker | `/api/technical/:symbol` |
+| `company_sectors` | `sodhaniScrap` NSE industry-classification sync | `/api/screener` (industry filter/labels only) |
 | `bse_indices` | `sodhaniScrap` BSE indices worker (master list of SENSEX + ~77 sectoral/thematic indices) | `/api/indices`, `/api/indices/:code/history` |
 | `bse_index_history` | `sodhaniScrap` BSE indices worker (unified daily-close + intraday-tick series) | `/api/indices`, `/api/indices/:code/history` |
 | `bse_index_constituents` | `sodhaniScrap` BSE index constituents sync (BSE HeatMapData feed, capped at 30 rows/index upstream) | `/api/indices/:code/constituents` |
@@ -302,6 +305,39 @@ GET /api/quote/ANDHRAPET
 
 ---
 
+### `GET /api/quotes`
+
+Batch form of `/api/quote/:symbol` — one round trip for a list of tickers/scrip codes instead of one request per instrument. Same row shape, same case-insensitive ticker-or-scrip-code matching per code.
+
+| Query param | Required | Notes |
+|---|---|---|
+| `codes` | yes | Comma-separated tickers and/or scrip codes, e.g. `codes=500325,532540,RELIANCE`. Deduplicated and capped at 50 — extra codes beyond the cap are silently dropped, not an error. |
+
+**Example**
+```
+GET /api/quotes?codes=500325,532540,RELIANCE
+```
+
+**Response**
+```json
+{
+  "count": 2,
+  "quotes": [
+    { "FinInstrmId": "500325", "TckrSymb": "RELIANCE", "...": "same shape as /api/quote/:symbol" },
+    { "FinInstrmId": "532540", "TckrSymb": "TCS", "...": "..." }
+  ]
+}
+```
+
+Codes that don't match anything in the watchlist are **silently omitted** rather than causing an error — `RELIANCE` and `500325` above both resolve to the same instrument, so the count can be lower than the number of codes requested even when every code is valid. Diff the requested list against the returned `TckrSymb`/`FinInstrmId` values to see what didn't resolve.
+
+**400** if `codes` is missing or empty:
+```json
+{ "error": "Query param 'codes' is required (comma-separated ticker symbols or scrip codes)." }
+```
+
+---
+
 ### `GET /api/history/:symbol`
 
 OHLCV history for one instrument, ordered chronologically (oldest to newest). Time-based bucketing is applied dynamically based on the requested range (e.g., weekly buckets for `1y` and `5y`, monthly for `max`). Data is downsampled to ~100 points via LTTB for `line` charts to optimize client-side rendering. Same `:symbol` matching rules as `/api/quote`.
@@ -394,50 +430,58 @@ Note: this only searches the curated watchlist, not the full BSE market — see 
 
 ---
 
-### `GET /api/announcements`
+### `GET /api/announcements/:symbol`
 
-Recent BSE corporate announcements/filings.
+Recent BSE corporate announcements/filings for one instrument. `:symbol` is **required** — this
+is a path param, not a query param — and matches (case-insensitive) against the ticker or the
+numeric BSE scrip code, same rule as `/api/quote`.
 
 | Query param | Default | Max |
 |---|---|---|
 | `limit` | 20 | 100 |
-| `scrip_cd` | *(none — all companies)* | — |
 
 **Examples**
 ```
-GET /api/announcements
-GET /api/announcements?scrip_cd=500325&limit=10
+GET /api/announcements/500295
+GET /api/announcements/VEDL?limit=10
 ```
 
 **Response**
 ```json
 {
-  "count": 10,
+  "count": 1,
   "announcements": [
     {
-      "newsid": "a4d8...",
-      "scrip_cd": "500325",
-      "news_dt": "2026-07-24T10:00:00.000Z",
-      "newssub": "Financial Results",
-      "headline": "Outcome of Board Meeting",
-      "slongname": "RELIANCE INDUSTRIES LTD.",
-      "announcement_type": "C",
-      "attachmentname": "...",
+      "newsid": "d0a20d46-c0c1-45bd-84be-a0edc80cb063",
+      "scrip_cd": "500295",
+      "news_dt": "2026-07-30T15:14:28.183Z",
+      "newssub": "Vedanta Ltd - 500295 - Announcement under Regulation 30 (LODR)-Analyst / Investor Meet - Outcome",
+      "headline": "Please refer the enclosed file",
+      "slongname": "Vedanta Ltd",
+      "announcement_type": "A",
+      "attachmentname": "3eee2919-15cb-4935-b161-fdc706d365ca.pdf",
       "categoryname": "Company Update"
+    }
+  ]
 }
 ```
+
+`count: 0` (not an error) if the instrument has no announcements on file.
 
 ---
 
 ### `GET /api/static-stock`
 
-Fetches static JSON file contents generated by `sodhaniScrap` for a specific stock from the `output_consolidated` or `output` directories.
+Fetches static JSON file contents generated by `sodhaniScrap` (a `screener.in` scrape) for one
+stock, from the `output` directory (`STATIC_JSON_DIR`, defaults to `/opt/sodhaniScrap/output`).
+If `query` doesn't match a file directly, the route also tries the BSE→NSE symbol mapping in
+`exchange_code_mappings.json` before giving up.
 
 | Query param | Default | Max |
 |---|---|---|
 | `query` | **(required)** | — |
 
-`query` is matched (case-insensitive) against the file names in the output directories (with or without `.json` extension).
+`query` is matched (case-insensitive) against the file names in the output directory (with or without `.json` extension).
 
 **Examples**
 ```
@@ -459,9 +503,159 @@ GET /api/static-stock?query=3BBLACKBIO
 }
 ```
 
-**404** if the static JSON file isn't found in either output directory:
+**404** if the static JSON file isn't found:
 ```json
 { "error": "Static JSON not found for 'FOO'" }
+```
+
+---
+
+### `GET /api/static-stock-consolidated`
+
+Same lookup as `/api/static-stock` (including the BSE→NSE fallback), but reads from a **separate**
+directory — `output_consolidated` (`CONSOLIDATED_JSON_DIR`, defaults to
+`/opt/sodhaniScrap/output_consolidated`) — which carries a richer payload: `key_metrics`,
+`pros_cons`, `quarterly`/`yearly` financials, shareholding pattern, and peer comparison, on top of
+the same `overview` block `/api/static-stock` returns.
+
+| Query param | Default | Max |
+|---|---|---|
+| `query` | **(required)** | — |
+
+**Example**
+```
+GET /api/static-stock-consolidated?query=500325
+```
+
+**Response** (truncated — the full payload also carries `pros_cons`, `quarterly`, `yearly`, `shareholding`, `peers` and more)
+```json
+{
+  "ticker": "RELIANCE",
+  "url": "https://www.screener.in/company/RELIANCE/consolidated/",
+  "overview": {
+    "company_name": "Reliance Industries Ltd",
+    "current_price": "18,03,481",
+    "about": "",
+    "website": "http://www.ril.com",
+    "bse_link": "https://www.bseindia.com/stock-share-price/reliance-industries-ltd/RELIANCE/500325/",
+    "nse_link": "https://www.nseindia.com/get-quotes/equity?symbol=RELIANCE"
+  },
+  "key_metrics": {
+    "Market Cap": "₹ 18,03,481 Cr.",
+    "Current Price": "₹ 1,333",
+    "High / Low": "₹ 1,612 / 1,253",
+    "Stock P/E": "23.2",
+    "Book Value": "₹ 668",
+    "Dividend Yield": "0.45 %",
+    "ROCE": "10.3 %",
+    "ROE": "8.91 %",
+    "Face Value": "₹ 10.0"
+  }
+}
+```
+
+**404** `{ "error": "Consolidated static JSON not found for 'FOO'" }`
+
+---
+
+### `GET /api/screener`
+
+Paginated, sortable, industry-filterable list over `stock_metrics` (a nightly-computed table — see
+`/api/metrics` below) joined to `company_stock` and `company_sectors`. Backs the peer-comparison
+and screener-style browsing use cases.
+
+| Query param | Default | Max | Notes |
+|---|---|---|---|
+| `page` | 1 | — | |
+| `limit` | 25 | 100 | |
+| `industry` | *(none — all)* | — | An NSE industry-classification code, e.g. `IN0201`. Nested codes like `IN02/IN0201` are accepted; only the last segment is used. |
+| `sort_by` | `mkt_cap` | — | One of `cmp`, `pe`, `mkt_cap`, `div_yld`, `np_qtr`, `profit_var`, `sales_qtr`, `sales_var`, `roce`. An unrecognized value silently falls back to `mkt_cap`. |
+| `order` | `desc` | — | `asc` or `desc`. |
+
+**Example**
+```
+GET /api/screener?industry=IN0201&sort_by=pe&order=asc&limit=10
+```
+
+**Response**
+```json
+{
+  "data": [
+    {
+      "FinInstrmId": "500325", "TckrSymb": "RELIANCE", "FinInstrmNm": "RELIANCE INDUSTRIES LTD.",
+      "sector_name": "...", "industry_name": "...", "leaf_name": "...",
+      "cmp": "1333.00", "pe": "23.2", "mkt_cap": "1803481.00", "div_yld": "0.45",
+      "np_qtr": "...", "profit_var": "...", "sales_qtr": "...", "sales_var": "...", "roce": "10.3"
+    }
+  ],
+  "pagination": { "total": 1, "page": 1, "limit": 10, "totalPages": 1 }
+}
+```
+
+Rows with no `stock_metrics` entry are simply absent — there is no error for an empty result set,
+only an empty `data` array.
+
+---
+
+### `GET /api/technical/:symbol`
+
+Precomputed technical-analysis snapshot (moving averages, RSI, support/resistance, etc.) for one
+instrument, from a nightly worker's `technical_analysis` table. `:symbol` matches the same
+ticker-or-scrip-code rule as `/api/quote`.
+
+**Example**
+```
+GET /api/technical/500325
+```
+
+**Response**
+```json
+{
+  "data": { "...": "worker-computed indicator payload, shape owned by the sodhaniScrap technical-analysis worker, not this route" },
+  "updated_at": "2026-08-10T02:15:00.000Z"
+}
+```
+
+**404** if the worker hasn't computed this instrument yet:
+```json
+{ "error": "Technical analysis not found for symbol 'FOO'." }
+```
+
+---
+
+### `GET /api/metrics/:symbol`
+
+Precomputed valuation/profitability metrics (the same `stock_metrics` table `/api/screener` reads)
+for one instrument, reshaped into display-ready labeled keys. `:symbol` matches the same
+ticker-or-scrip-code rule as `/api/quote`.
+
+**Example**
+```
+GET /api/metrics/500325
+```
+
+**Response**
+```json
+{
+  "CMP": 1333.0,
+  "P/E": 23.2,
+  "Mkt Cap": 1803481.0,
+  "Div Yld": 0.45,
+  "NP Qtr": 0,
+  "Profit Var": 0,
+  "Sales Qtr": 0,
+  "Sales Var": 0,
+  "ROCE": 10.3,
+  "updated_at": "2026-08-10T02:15:00.000Z"
+}
+```
+
+Every field is parsed with `parseFloat` server-side — a missing/non-numeric source value comes
+back as `NaN` (which JSON-serializes to `null`), not an error.
+
+**404** if this instrument has no `stock_metrics` row yet:
+```json
+{ "error": "Metrics not found for symbol 'FOO'. They may not have been calculated yet." }
 ```
 
 ---
