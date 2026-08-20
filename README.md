@@ -114,6 +114,7 @@ cp .env.example .env   # fill in DATABASE_URL, JWT_SECRET, MSG91_AUTH_KEY, GOOGL
 psql "$DATABASE_URL" -f db/migrations/0001_create_users.sql          # creates the users table
 psql "$DATABASE_URL" -f db/migrations/0002_research_analysts.sql     # creates the research_analysts table
 psql "$DATABASE_URL" -f db/migrations/0003_research_calls.sql        # creates research_calls, call_comments, payments, purchased_calls
+psql "$DATABASE_URL" -f db/migrations/0005_ra_transfers.sql          # creates ra_transfers (RA payout ledger)
 npm run seed:ra          # creates dummy RA dev accounts (see scripts/seed-research-analysts.ts)
 npm run dev              # runs src/index.ts directly via ts-node
 ```
