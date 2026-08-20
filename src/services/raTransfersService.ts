@@ -110,7 +110,7 @@ export async function getRecentPayouts(raId: string, limit: number): Promise<Pay
     `SELECT rt.amount_paise, rt.processed_at, rt.call_id, rc.company_name, rc.recommendation
      FROM ra_transfers rt
      JOIN research_calls rc ON rc.id = rt.call_id
-     WHERE rt.ra_id = $1 AND rt.status = 'processed'
+     WHERE rt.ra_id = $1 AND rt.status = 'processed' AND rt.processed_at IS NOT NULL
      ORDER BY rt.processed_at DESC
      LIMIT $2`,
     [raId, limit]

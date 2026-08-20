@@ -135,9 +135,9 @@ async function main() {
     // 5. getRecentPayouts returns both processed transfers (not the failed one), with call details joined.
     const payouts = await getRecentPayouts(raId, 20);
     assert(payouts.length === 2, `getRecentPayouts returns exactly 2 rows (got ${payouts.length})`);
-    assert(payouts.every((p: any) => p.companyName === 'Verify Fixture Co.'), 'payout companyName is joined from research_calls');
+    assert(payouts.every((p) => p.companyName === 'Verify Fixture Co.'), 'payout companyName is joined from research_calls');
     assert(
-      payouts.some((p: any) => p.amountPaise === 4600) && payouts.some((p: any) => p.amountPaise === 7000),
+      payouts.some((p) => p.amountPaise === 4600) && payouts.some((p) => p.amountPaise === 7000),
       'payouts include both the recent (4600) and old (7000) processed transfers'
     );
 
