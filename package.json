@@ -7,7 +7,6 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "seed:ra": "ts-node scripts/seed-research-analysts.ts",
     "seed:calls": "ts-node scripts/seed-sample-data.ts"
   },
   "dependencies": {

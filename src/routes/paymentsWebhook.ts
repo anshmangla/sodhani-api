@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { verifyWebhookSignature } from '../services/razorpayService';
 import { completePurchase } from '../services/purchaseService';
+import { pool } from '../db/pool';
 
 const router = Router();
 
@@ -21,6 +22,54 @@ router.post('/', asyncHandler(async (req, res) => {
   }
 
   const event = JSON.parse(rawBody.toString('utf-8'));
+
+  if (event.event === 'account.activated') {
+    const accountId = event.payload.account.entity.id;
+    console.log('[payments/webhook] Account activated:', accountId);
+    await pool.query(
+      `UPDATE research_analysts SET onboarding_status = 'active', updated_at = now() WHERE razorpay_account_id = $1`,
+      [accountId]
+    );
+    res.status(200).json({ received: true });
+    return;
+  }
+
+  if (event.event === 'account.rejected') {
+    const accountId = event.payload.account.entity.id;
+    console.log('[payments/webhook] Account rejected:', accountId);
+    await pool.query(
+      `UPDATE research_analysts SET onboarding_status = 'rejected', updated_at = now() WHERE razorpay_account_id = $1`,
+      [accountId]
+    );
+    res.status(200).json({ received: true });
+    return;
+  }
+
+  if (event.event === 'transfer.processed') {
+    console.log('[payments/webhook] Transfer processed:', event.payload.transfer.entity.id);
+    res.status(200).json({ received: true });
+    return;
+  }
+
+  if (event.event === 'transfer.failed') {
+    console.error('[payments/webhook] TRANSFER FAILED:', event.payload.transfer.entity.id);
+    // Ideally you would insert this into a failed_transfers audit table or trigger an email.
+    // For now, logging it clearly so ops can manually retry or notify the RA.
+    res.status(200).json({ received: true });
+    return;
+  }
+
+  if (event.event === 'settlement.processed') {
+    console.log('[payments/webhook] Settlement processed to bank account for amount:', event.payload.settlement.entity.amount);
+    res.status(200).json({ received: true });
+    return;
+  }
+
+  if (event.event === 'payment.failed') {
+    console.warn('[payments/webhook] Payment failed:', event.payload.payment.entity.id, event.payload.payment.entity.error_description);
+    res.status(200).json({ received: true });
+    return;
+  }
 
   if (event.event !== 'payment.captured') {
     // Acknowledge every other event type without acting on it — per Razorpay's

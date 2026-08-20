@@ -4,6 +4,7 @@ import marketRouter from './routes/market';
 import authRouter from './routes/auth';
 import raAuthRouter from './routes/raAuth';
 import raCallsRouter from './routes/raCalls';
+import raOnboardingRouter from './routes/raOnboarding';
 import callsRouter from './routes/calls';
 import paymentsRouter from './routes/payments';
 import paymentsWebhookRouter from './routes/paymentsWebhook';
@@ -22,6 +23,7 @@ app.get('/health', (_req, res) => {
 app.use('/api', marketRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/ra', raAuthRouter);
+app.use('/api/ra/onboarding', raOnboardingRouter);
 app.use('/api/ra', raCallsRouter);
 app.use('/api/calls', callsRouter);
 app.use('/api/payments', paymentsRouter);

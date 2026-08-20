@@ -6,7 +6,7 @@ import { requireRaAuth } from '../auth/raMiddleware';
 
 const router = Router();
 
-const RA_COLUMNS = 'id, username, full_name, profile_picture_url, designation, is_active';
+const RA_COLUMNS = 'id, email, full_name, profile_picture_url, designation, is_active, onboarding_status';
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -14,23 +14,54 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
   };
 }
 
-// POST /api/ra/login { username, password }
+// POST /api/ra/signup
+router.post('/signup', asyncHandler(async (req, res) => {
+  const { email, password, full_name, designation } = req.body ?? {};
+  if (!email || !password || !full_name) {
+    res.status(400).json({ detail: 'email, password, and full_name are required' });
+    return;
+  }
+
+  const existing = await pool.query('SELECT 1 FROM research_analysts WHERE lower(email) = lower($1)', [email]);
+  if (existing.rows.length > 0) {
+    res.status(400).json({ detail: 'Account with this email already exists' });
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const result = await pool.query(
+    `INSERT INTO research_analysts (email, password_hash, full_name, designation) 
+     VALUES ($1, $2, $3, $4) RETURNING id, token_version`,
+    [email, passwordHash, full_name, designation || null]
+  );
+  
+  const row = result.rows[0];
+  const token = signRaAuthToken(row.id, row.token_version);
+  const raResult = await pool.query(`SELECT ${RA_COLUMNS} FROM research_analysts WHERE id = $1`, [row.id]);
+  
+  res.status(201).json({
+    token,
+    ra: raResult.rows[0],
+  });
+}));
+
+// POST /api/ra/login { email, password }
 router.post('/login', asyncHandler(async (req, res) => {
-  const { username, password } = req.body ?? {};
-  if (!username || !password) {
-    res.status(400).json({ detail: 'username and password are required' });
+  const { email, password } = req.body ?? {};
+  if (!email || !password) {
+    res.status(400).json({ detail: 'email and password are required' });
     return;
   }
 
   const result = await pool.query(
-    'SELECT id, password_hash, is_active, token_version FROM research_analysts WHERE lower(username) = lower($1)',
-    [username]
+    'SELECT id, password_hash, is_active, token_version FROM research_analysts WHERE lower(email) = lower($1)',
+    [email]
   );
 
   const row = result.rows[0];
   const passwordMatches = row ? await bcrypt.compare(password, row.password_hash) : false;
   if (!row || !passwordMatches) {
-    res.status(401).json({ detail: 'Invalid username or password' });
+    res.status(401).json({ detail: 'Invalid email or password' });
     return;
   }
 
@@ -41,10 +72,9 @@ router.post('/login', asyncHandler(async (req, res) => {
 
   const token = signRaAuthToken(row.id, row.token_version);
   const raResult = await pool.query(`SELECT ${RA_COLUMNS} FROM research_analysts WHERE id = $1`, [row.id]);
-  const { id, username: raUsername, full_name, profile_picture_url, designation } = raResult.rows[0];
   res.status(200).json({
     token,
-    ra: { id, username: raUsername, full_name, profile_picture_url, designation },
+    ra: raResult.rows[0],
   });
 }));
 

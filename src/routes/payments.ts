@@ -22,7 +22,7 @@ router.post('/order', requireAuth, asyncHandler(async (req, res) => {
   }
 
   const callResult = await pool.query(
-    `SELECT rc.id, rc.is_paid, rc.price_paise, ra.is_active AS ra_is_active
+    `SELECT rc.id, rc.is_paid, rc.price_paise, ra.is_active AS ra_is_active, ra.razorpay_account_id
      FROM research_calls rc
      JOIN research_analysts ra ON ra.id = rc.ra_id
      WHERE rc.id = $1`,
@@ -57,7 +57,7 @@ router.post('/order', requireAuth, asyncHandler(async (req, res) => {
   const order = await createOrder(row.price_paise, receipt, {
     user_id: req.authUserId!,
     call_id: callId,
-  });
+  }, row.razorpay_account_id);
 
   await pool.query(
     `INSERT INTO payments (user_id, call_id, razorpay_order_id, amount_paise, status)

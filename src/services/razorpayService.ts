@@ -17,19 +17,60 @@ function getWebhookSecret(): string {
   return v;
 }
 
+function getRazorpayInstance() {
+  return new Razorpay({ key_id: getKeyId(), key_secret: getKeySecret() });
+}
+
 export async function createOrder(
   amountPaise: number,
   receipt: string,
-  notes: Record<string, string>
+  notes: Record<string, string>,
+  raAccountId?: string
 ): Promise<{ id: string; amount: number; currency: string }> {
-  const instance = new Razorpay({ key_id: getKeyId(), key_secret: getKeySecret() });
-  const order = await instance.orders.create({
+  const instance = getRazorpayInstance();
+  
+  const options: any = {
     amount: amountPaise,
     currency: 'INR',
     receipt,
     notes,
-  });
+  };
+
+  // If a research analyst's Razorpay account ID is provided, set up a transfer for 90% of the sale
+  if (raAccountId) {
+    const sellerAmount = Math.floor(amountPaise * 0.9);
+    options.transfers = [
+      {
+        account: raAccountId,
+        amount: sellerAmount,
+        currency: 'INR',
+      }
+    ];
+  }
+
+  const order = await instance.orders.create(options);
   return { id: order.id, amount: Number(order.amount), currency: order.currency };
+}
+
+export async function createLinkedAccount(data: any): Promise<any> {
+  const instance = getRazorpayInstance();
+  return await instance.accounts.create(data);
+}
+
+export async function createStakeholder(accountId: string, data: any): Promise<any> {
+  const instance = getRazorpayInstance();
+  // Based on razorpay API for stakeholder creation
+  return await instance.stakeholders.create(accountId, data);
+}
+
+export async function requestProductConfig(accountId: string, data: any): Promise<any> {
+  const instance = getRazorpayInstance();
+  return await instance.products.requestProductConfiguration(accountId, data);
+}
+
+export async function updateProductConfig(accountId: string, productId: string, data: any): Promise<any> {
+  const instance = getRazorpayInstance();
+  return await instance.products.edit(accountId, productId, data);
 }
 
 export function verifyCheckoutSignature(orderId: string, paymentId: string, signature: string): boolean {
