@@ -2,7 +2,13 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { pool } from '../src/db/pool';
-import { recordTransferProcessed, recordTransferFailed } from '../src/services/raTransfersService';
+import {
+  recordTransferProcessed,
+  recordTransferFailed,
+  getEarningsSummary,
+  getRecentPayouts,
+  getEarningsByCall,
+} from '../src/services/raTransfersService';
 
 // Ad-hoc verification script for raTransfersService, following this repo's
 // existing convention (see scripts/seed-sample-data.ts) of exercising real
@@ -106,6 +112,58 @@ async function main() {
     assert(row?.status === 'failed', 'failed row has status failed');
     assert(row?.error_description === 'Insufficient balance', 'failed row stores the error description');
     assert(row?.processed_at === null, 'failed row has no processed_at');
+
+    // 4. A transfer processed well outside this month/year counts toward the
+    // lifetime total but must NOT leak into this_month/this_year — this is the
+    // one assertion that would catch a month/year filter that's accidentally
+    // always-true (e.g. a bad date_trunc comparison), which a same-day-only
+    // fixture could never catch.
+    const fourHundredDaysAgo = Math.floor(Date.now() / 1000) - 400 * 24 * 3600;
+    await recordTransferProcessed({
+      transferId: 'trf_verify_old',
+      orderId: ORDER_3,
+      amountPaise: 7000,
+      processedAtEpochSeconds: fourHundredDaysAgo,
+    });
+
+    const summary = await getEarningsSummary(raId);
+    assert(summary.totalPaise === 4600 + 7000, `getEarningsSummary.totalPaise includes the old transfer (got ${summary.totalPaise})`);
+    assert(summary.thisMonthPaise === 4600, `getEarningsSummary.thisMonthPaise excludes the old transfer (got ${summary.thisMonthPaise})`);
+    assert(summary.thisYearPaise === 4600, `getEarningsSummary.thisYearPaise excludes the old transfer (got ${summary.thisYearPaise})`);
+    assert(summary.failedTransferCount === 1, `getEarningsSummary.failedTransferCount is 1 (got ${summary.failedTransferCount})`);
+
+    // 5. getRecentPayouts returns both processed transfers (not the failed one), with call details joined.
+    const payouts = await getRecentPayouts(raId, 20);
+    assert(payouts.length === 2, `getRecentPayouts returns exactly 2 rows (got ${payouts.length})`);
+    assert(payouts.every((p: any) => p.companyName === 'Verify Fixture Co.'), 'payout companyName is joined from research_calls');
+    assert(
+      payouts.some((p: any) => p.amountPaise === 4600) && payouts.some((p: any) => p.amountPaise === 7000),
+      'payouts include both the recent (4600) and old (7000) processed transfers'
+    );
+
+    // 6. getEarningsByCall groups both processed transfers under the fixture call (same call_id for all 3 fixture payments).
+    const byCall = await getEarningsByCall(raId);
+    assert(byCall.length === 1, `getEarningsByCall returns exactly 1 row (got ${byCall.length})`);
+    assert(byCall[0]?.totalPaise === 4600 + 7000, `by-call totalPaise is 11600 (got ${byCall[0]?.totalPaise})`);
+    assert(byCall[0]?.count === 2, `by-call count is 2 (got ${byCall[0]?.count})`);
+
+    // 6b. A brand-new RA with no transfers gets zeros/empty arrays, not an error.
+    const emptyRaResult = await pool.query(
+      `INSERT INTO research_analysts (email, password_hash, full_name)
+       VALUES ('verify-ra-transfers-empty@example.invalid', 'x', 'Empty Fixture RA') RETURNING id`
+    );
+    const emptyRaId = emptyRaResult.rows[0].id;
+    try {
+      const emptySummary = await getEarningsSummary(emptyRaId);
+      assert(emptySummary.totalPaise === 0, 'empty RA totalPaise is 0');
+      assert(emptySummary.failedTransferCount === 0, 'empty RA failedTransferCount is 0');
+      const emptyPayouts = await getRecentPayouts(emptyRaId, 20);
+      assert(emptyPayouts.length === 0, 'empty RA getRecentPayouts returns []');
+      const emptyByCall = await getEarningsByCall(emptyRaId);
+      assert(emptyByCall.length === 0, 'empty RA getEarningsByCall returns []');
+    } finally {
+      await pool.query('DELETE FROM research_analysts WHERE id = $1', [emptyRaId]);
+    }
 
     // 7. An orderId with no matching payment throws, rather than silently no-op-ing.
     // (Numbered 7 here because Task 4 inserts read-path assertions 4-6 above this point.)
