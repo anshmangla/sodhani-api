@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { verifyWebhookSignature } from '../services/razorpayService';
 import { completePurchase } from '../services/purchaseService';
+import { recordTransferProcessed, recordTransferFailed } from '../services/raTransfersService';
 import { pool } from '../db/pool';
 
 const router = Router();
@@ -46,15 +47,35 @@ router.post('/', asyncHandler(async (req, res) => {
   }
 
   if (event.event === 'transfer.processed') {
-    console.log('[payments/webhook] Transfer processed:', event.payload.transfer.entity.id);
+    const entity = event.payload.transfer.entity;
+    try {
+      await recordTransferProcessed({
+        transferId: entity.id,
+        orderId: entity.source,
+        amountPaise: entity.amount,
+        processedAtEpochSeconds: entity.processed_at,
+      });
+      console.log('[payments/webhook] Transfer processed:', entity.id);
+    } catch (err) {
+      console.error('[payments/webhook] recordTransferProcessed failed:', err);
+    }
     res.status(200).json({ received: true });
     return;
   }
 
   if (event.event === 'transfer.failed') {
-    console.error('[payments/webhook] TRANSFER FAILED:', event.payload.transfer.entity.id);
-    // Ideally you would insert this into a failed_transfers audit table or trigger an email.
-    // For now, logging it clearly so ops can manually retry or notify the RA.
+    const entity = event.payload.transfer.entity;
+    try {
+      await recordTransferFailed({
+        transferId: entity.id,
+        orderId: entity.source,
+        amountPaise: entity.amount,
+        errorDescription: entity.error?.description ?? null,
+      });
+      console.error('[payments/webhook] Transfer failed:', entity.id, entity.error?.description);
+    } catch (err) {
+      console.error('[payments/webhook] recordTransferFailed failed:', err);
+    }
     res.status(200).json({ received: true });
     return;
   }
