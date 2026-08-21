@@ -63,6 +63,22 @@ router.post('/', asyncHandler(async (req, res) => {
     return;
   }
 
+  // Not in Razorpay's published Route webhook reference (only activated/
+  // under_review/needs_clarification are documented there) but present as
+  // a subscribable event in this account's Dashboard — assumed to share the
+  // same payload shape as its sibling product.route.* events until a real
+  // delivery confirms otherwise.
+  if (event.event === 'product.route.rejected') {
+    const accountId = event.payload.merchant_product.entity.merchant_id;
+    console.log('[payments/webhook] Route product rejected:', accountId);
+    await pool.query(
+      `UPDATE research_analysts SET onboarding_status = 'rejected', updated_at = now() WHERE razorpay_account_id = $1`,
+      [accountId]
+    );
+    res.status(200).json({ received: true });
+    return;
+  }
+
   if (event.event === 'transfer.processed') {
     const entity = event.payload.transfer.entity;
     try {
