@@ -24,9 +24,15 @@ router.post('/', asyncHandler(async (req, res) => {
 
   const event = JSON.parse(rawBody.toString('utf-8'));
 
-  if (event.event === 'account.activated') {
-    const accountId = event.payload.account.entity.id;
-    console.log('[payments/webhook] Account activated:', accountId);
+  // Route's actual KYC-status webhooks are product.route.* (not the
+  // account.activated/account.rejected events this used to listen for,
+  // which Razorpay's Route webhook docs don't define at all — those never
+  // fired, so onboarding_status could never leave 'under_review' on its own).
+  // Payload shape confirmed against Razorpay's Route webhook reference:
+  // payload.merchant_product.entity.merchant_id is the linked account id.
+  if (event.event === 'product.route.activated') {
+    const accountId = event.payload.merchant_product.entity.merchant_id;
+    console.log('[payments/webhook] Route product activated:', accountId);
     await pool.query(
       `UPDATE research_analysts SET onboarding_status = 'active', updated_at = now() WHERE razorpay_account_id = $1`,
       [accountId]
@@ -35,11 +41,22 @@ router.post('/', asyncHandler(async (req, res) => {
     return;
   }
 
-  if (event.event === 'account.rejected') {
-    const accountId = event.payload.account.entity.id;
-    console.log('[payments/webhook] Account rejected:', accountId);
+  if (event.event === 'product.route.under_review') {
+    const accountId = event.payload.merchant_product.entity.merchant_id;
+    console.log('[payments/webhook] Route product under review:', accountId);
     await pool.query(
-      `UPDATE research_analysts SET onboarding_status = 'rejected', updated_at = now() WHERE razorpay_account_id = $1`,
+      `UPDATE research_analysts SET onboarding_status = 'under_review', updated_at = now() WHERE razorpay_account_id = $1`,
+      [accountId]
+    );
+    res.status(200).json({ received: true });
+    return;
+  }
+
+  if (event.event === 'product.route.needs_clarification') {
+    const accountId = event.payload.merchant_product.entity.merchant_id;
+    console.log('[payments/webhook] Route product needs clarification:', accountId);
+    await pool.query(
+      `UPDATE research_analysts SET onboarding_status = 'needs_clarification', updated_at = now() WHERE razorpay_account_id = $1`,
       [accountId]
     );
     res.status(200).json({ received: true });

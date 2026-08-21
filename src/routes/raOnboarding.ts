@@ -111,7 +111,12 @@ router.post('/product-config', asyncHandler(async (req, res) => {
     }
 
     const activationStatus = product.activation_status;
-    const newStatus = activationStatus === 'activated' ? 'active' : 'under_review';
+    const newStatus =
+      activationStatus === 'activated'
+        ? 'active'
+        : activationStatus === 'needs_clarification'
+          ? 'needs_clarification'
+          : 'under_review';
 
     await pool.query(
       `UPDATE research_analysts 
