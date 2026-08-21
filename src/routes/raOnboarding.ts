@@ -119,10 +119,10 @@ router.post('/product-config', asyncHandler(async (req, res) => {
           : 'under_review';
 
     await pool.query(
-      `UPDATE research_analysts 
-       SET onboarding_status = $1, updated_at = now() 
-       WHERE id = $2`,
-      [newStatus, req.authRaId]
+      `UPDATE research_analysts
+       SET onboarding_status = $1, razorpay_product_id = $2, updated_at = now()
+       WHERE id = $3`,
+      [newStatus, product.id, req.authRaId]
     );
 
     res.status(200).json({ product, status: newStatus });

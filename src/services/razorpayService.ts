@@ -76,6 +76,15 @@ export async function requestProductConfig(accountId: string, data: any): Promis
   return await instance.products.requestProductConfiguration(accountId, data);
 }
 
+// Live status check used to self-heal onboarding_status when it's been sitting
+// in a non-terminal state — Route KYC-status webhooks have proven unreliable
+// to depend on alone (missed/mis-scoped Dashboard config, delivery timing).
+export async function fetchProductStatus(accountId: string, productId: string): Promise<{ activationStatus: string }> {
+  const instance = getRazorpayInstance();
+  const product = await instance.products.fetch(accountId, productId);
+  return { activationStatus: product.activation_status };
+}
+
 export async function updateProductConfig(accountId: string, productId: string, data: any): Promise<any> {
   const instance = getRazorpayInstance();
   return await instance.products.edit(accountId, productId, data);

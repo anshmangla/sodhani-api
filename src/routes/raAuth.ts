@@ -3,10 +3,22 @@ import bcrypt from 'bcryptjs';
 import { pool } from '../db/pool';
 import { signRaAuthToken } from '../auth/raJwt';
 import { requireRaAuth } from '../auth/raMiddleware';
+import { fetchProductStatus } from '../services/razorpayService';
 
 const router = Router();
 
 const RA_COLUMNS = 'id, email, full_name, profile_picture_url, designation, is_active, onboarding_status';
+
+// Statuses that can still change without another app action from the RA —
+// worth reconciling against Razorpay's live status on read. 'pending' and
+// 'account_created' are excluded: no product exists yet to check.
+const RECONCILABLE_STATUSES = ['stakeholder_created', 'under_review', 'needs_clarification'];
+const ACTIVATION_STATUS_MAP: Record<string, string> = {
+  activated: 'active',
+  under_review: 'under_review',
+  needs_clarification: 'needs_clarification',
+  rejected: 'rejected',
+};
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -104,12 +116,38 @@ router.post('/change-password', requireRaAuth, asyncHandler(async (req, res) => 
 
 // GET /api/ra/me
 router.get('/me', requireRaAuth, asyncHandler(async (req, res) => {
-  const result = await pool.query(`SELECT ${RA_COLUMNS} FROM research_analysts WHERE id = $1`, [req.authRaId]);
+  const result = await pool.query(
+    `SELECT ${RA_COLUMNS}, razorpay_account_id, razorpay_product_id FROM research_analysts WHERE id = $1`,
+    [req.authRaId]
+  );
   if (result.rows.length === 0) {
     res.status(404).json({ detail: 'Research analyst not found' });
     return;
   }
-  res.status(200).json({ ra: result.rows[0] });
+  let ra = result.rows[0];
+
+  // Self-heal: Route KYC-status webhooks have proven unreliable to depend on
+  // alone (a Dashboard config gap silently meant these were never sent for
+  // months), so reconcile against Razorpay's live status on every read while
+  // we're sitting in a state that could still change.
+  if (RECONCILABLE_STATUSES.includes(ra.onboarding_status) && ra.razorpay_account_id && ra.razorpay_product_id) {
+    try {
+      const { activationStatus } = await fetchProductStatus(ra.razorpay_account_id, ra.razorpay_product_id);
+      const resolvedStatus = ACTIVATION_STATUS_MAP[activationStatus];
+      if (resolvedStatus && resolvedStatus !== ra.onboarding_status) {
+        await pool.query(
+          `UPDATE research_analysts SET onboarding_status = $1, updated_at = now() WHERE id = $2`,
+          [resolvedStatus, ra.id]
+        );
+        ra = { ...ra, onboarding_status: resolvedStatus };
+      }
+    } catch (err) {
+      console.error('[ra/me] Live status reconciliation failed:', err);
+    }
+  }
+
+  const { razorpay_account_id, razorpay_product_id, ...publicRa } = ra;
+  res.status(200).json({ ra: publicRa });
 }));
 
 // POST /api/ra/logout
