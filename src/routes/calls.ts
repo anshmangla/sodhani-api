@@ -48,7 +48,6 @@ function buildPreviewPayload(row: any, purchased: boolean) {
     id: row.id,
     scrip_code: row.scrip_code,
     company_name: row.company_name,
-    recommendation: row.recommendation,
     is_paid: row.is_paid,
     price_paise: row.price_paise,
     status: row.status,
@@ -60,9 +59,12 @@ function buildPreviewPayload(row: any, purchased: boolean) {
   };
 }
 
+// `recommendation` (Buy/Sell/Hold) is the paywalled advice itself — it only
+// ever goes out once a caller is entitled, never in the locked preview.
 function buildFullPayload(row: any, purchased: boolean) {
   return {
     ...buildPreviewPayload(row, purchased),
+    recommendation: row.recommendation,
     current_price_at_publish: row.current_price_at_publish,
     volume_at_publish: row.volume_at_publish,
     target_price: row.target_price,
