@@ -1,6 +1,6 @@
 # sodhani-api
 
-A small REST API over the PostgreSQL database that [`sodhaniScrap`](https://github.com/Raman-pro/sodhaniScrap) populates. Market-data endpoints (`/api/*`) are read-only — they just query the tables `sodhaniScrap` keeps in sync and serve them as JSON: top gainers/losers, volume shockers, price/volume quotes, historical OHLCV data, and BSE announcements. Authentication endpoints (`/api/auth/*`) are the exception: they own a `users` table in the same database and are the app's only write path (see [Authentication](#authentication) below).
+A small REST API over the PostgreSQL database that [`sodhaniScrap`](https://github.com/Raman-pro/sodhaniScrap) populates. Market-data endpoints (`/api/*`) are read-only — they just query the tables `sodhaniScrap` keeps in sync and serve them as JSON: top gainers/losers, volume shockers, price/volume quotes, historical OHLCV data, and BSE announcements. Authentication endpoints (`/api/auth/*`) are the exception: they own a `users` table in the same database (see [Authentication](#authentication) below). The per-user watchlist and playlists (`/api/watchlist/*`) are another write path — they own the `watchlist_items`, `watchlist_playlists`, and `watchlist_playlist_items` tables (see [Watchlist and Playlists](#watchlist-and-playlists) below).
 
 This repo also hosts the **Research Analyst (RA) dashboard and paid-calls** feature: Research Analysts (a separate identity from regular `users`, authenticated via their own JWT) publish "research calls" (Buy/Hold/Sell recommendations on a stock), optionally gated behind a Razorpay payment, and consumers browse/purchase them. See [Research Analyst Dashboard and Paid Calls](#research-analyst-dashboard-and-paid-calls) below.
 
@@ -58,12 +58,14 @@ src/
     ├── calls.ts          # /api/calls/* — public call browsing (list/detail/comments)
     ├── payments.ts       # /api/payments/order, /verify — Razorpay checkout flow
     ├── paymentsWebhook.ts # /api/payments/webhook — Razorpay server-to-server webhook
-    └── myCalls.ts        # /api/me/calls, /calls/:id/comments — a consumer's purchased calls
+    ├── myCalls.ts        # /api/me/calls, /calls/:id/comments — a consumer's purchased calls
+    └── watchlist.ts      # /api/watchlist/* — per-user watchlist + named playlists
 db/
 └── migrations/
     ├── 0001_create_users.sql        # creates the users table
     ├── 0002_research_analysts.sql   # creates the research_analysts table
-    └── 0003_research_calls.sql      # creates research_calls, call_comments, payments, purchased_calls
+    ├── 0003_research_calls.sql      # creates research_calls, call_comments, payments, purchased_calls
+    └── 0004_watchlist_playlists.sql # creates watchlist_items, watchlist_playlists, watchlist_playlist_items
 scripts/
 ├── seed-research-analysts.ts  # npm run seed:ra — creates dummy RA dev accounts
 └── verify-ra-transfers.ts     # npm run verify:ra-transfers — ad-hoc verification script for the RA transfers/earnings ledger, run against a real dev database
@@ -115,16 +117,22 @@ Copy `.env.example` to `.env` and fill in:
 npm install
 cp .env.example .env   # fill in DATABASE_URL, JWT_SECRET, MSG91_AUTH_KEY, GOOGLE_CLIENT_ID,
                         # RA_JWT_SECRET, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET
-psql "$DATABASE_URL" -f db/migrations/0001_create_users.sql          # creates the users table
-psql "$DATABASE_URL" -f db/migrations/0002_research_analysts.sql     # creates the research_analysts table
-psql "$DATABASE_URL" -f db/migrations/0003_research_calls.sql        # creates research_calls, call_comments, payments, purchased_calls
-psql "$DATABASE_URL" -f db/migrations/0004_ra_onboarding.sql         # renames username to email, adds razorpay_account_id/razorpay_stakeholder_id/onboarding_status to research_analysts
-psql "$DATABASE_URL" -f db/migrations/0005_ra_transfers.sql          # creates ra_transfers (RA payout ledger)
-psql "$DATABASE_URL" -f db/migrations/0006_ra_transfer_settlements.sql # adds settlement_status/razorpay_settlement_id/razorpay_settlement_utr/settled_at to ra_transfers
-psql "$DATABASE_URL" -f db/migrations/0007_ra_product_id.sql          # adds razorpay_product_id to research_analysts (used to self-heal onboarding_status)
+npm run migrate         # applies all pending db/migrations/*.sql (idempotent, safe to re-run)
 npm run seed:ra          # creates dummy RA dev accounts (see scripts/seed-research-analysts.ts)
 npm run dev              # runs src/index.ts directly via ts-node
 ```
+
+## Testing
+
+```bash
+npm test                 # vitest + supertest integration suite against a dedicated
+                         # sodhani_api_test database (created automatically)
+```
+
+Tests create/seeded data live in `test/` and run against `DATABASE_URL_TEST` (defaults to
+`<your DATABASE_URL>` with the database name swapped to `sodhani_api_test`), so your real
+data is never touched. A test user, JWT, and minimal `company_stock`/`historical_prices`
+rows are seeded automatically.
 
 ## Build & run in production
 
@@ -161,9 +169,16 @@ npm start                # node dist/index.js
 ```bash
 cd /opt/sodhani-api
 git pull origin main
+npm install          # in case dependencies changed
+npm run migrate      # apply any new db/migrations (idempotent — safe even on an existing DB)
 npm run build
 sudo systemctl restart sodhani-api
 ```
+
+`npm run migrate` is safe to run on the VM where earlier migrations were applied manually:
+all DDL in `db/migrations/*.sql` is idempotent (`CREATE ... IF NOT EXISTS`), so already-present
+tables are skipped and only new ones are created. Each applied migration is recorded in the
+`schema_migrations` table (created if missing).
 
 ## API Reference
 
@@ -817,6 +832,224 @@ doesn't match any known index.
 
 ---
 
+## Watchlist and Playlists
+
+Per-user stock tracking, backed by three tables owned by this API (`db/migrations/0004_watchlist_playlists.sql`): `watchlist_items` (a user's tracked stocks), `watchlist_playlists` (named, orderable groups), and `watchlist_playlist_items` (the many-to-many link — a stock can be in multiple playlists). The "All" view is virtual: it's just every `watchlist_items` row for the user, not a stored playlist.
+
+All `/api/watchlist/*` routes require `Authorization: Bearer <consumer jwt>` (via `requireAuth`). **Note on error shape:** auth failures (missing/invalid/revoked token) come back as `{ "detail": "..." }`, matching `/api/auth/*`; but all *other* errors from these routes use the market-route shape `{ "error": "..." }`.
+
+Symbols are matched case-insensitively against `company_stock`'s ticker (`TckrSymb`) and are normalized to uppercase on write. Adding a symbol that isn't in the tracked watchlist (`company_stock`) returns `404` — the same scope rule as `/api/quote` (see the scope note above). Prices are joined server-side from `historical_prices` using the same latest-trading-day snapshot as `/api/quote`, so `price`, `change`, and `change_percent` are `null` until the instrument has backfilled price rows.
+
+---
+
+### `GET /api/watchlist`
+
+All of the authenticated user's watchlist items with server-side joined live prices, newest first.
+
+**Response** `200`
+```json
+{
+  "items": [
+    {
+      "id": "...",
+      "symbol": "RELIANCE",
+      "name": "RELIANCE INDUSTRIES LTD.",
+      "price": 2900.0,
+      "change": 45.0,
+      "change_percent": 1.58
+    }
+  ]
+}
+```
+
+---
+
+### `POST /api/watchlist`
+
+Add a stock to the watchlist. Idempotent.
+
+**Body**
+```json
+{ "symbol": "RELIANCE" }
+```
+
+**Response**
+- `201 { "symbol": "RELIANCE" }` — newly added
+- `200 { "symbol": "RELIANCE" }` — already present
+
+**Errors**
+- `400 { "error": "symbol is required" }`
+- `404 { "error": "No stock found for symbol 'FOO'" }`
+
+---
+
+### `DELETE /api/watchlist/:symbol`
+
+Remove a stock from the watchlist. Cascades it out of all playlists it belonged to.
+
+**Response** `204` (no body)
+
+**Errors**
+- `404 { "error": "'FOO' is not in the watchlist" }`
+
+---
+
+### `GET /api/watchlist/playlists`
+
+List the user's playlists with item counts, ordered by `position`.
+
+**Response** `200`
+```json
+{
+  "playlists": [
+    { "id": "...", "name": "Momentum", "position": 0, "created_at": "...", "updated_at": "...", "item_count": 3 }
+  ]
+}
+```
+
+---
+
+### `POST /api/watchlist/playlists`
+
+Create a playlist. Names are unique per user (case-insensitive).
+
+**Body**
+```json
+{ "name": "Momentum" }
+```
+
+**Response** `201`
+```json
+{ "playlist": { "id": "...", "name": "Momentum", "position": 0, "item_count": 0 } }
+```
+
+**Errors**
+- `400 { "error": "name is required" }`
+- `409 { "error": "A playlist named 'Momentum' already exists" }`
+
+---
+
+### `PATCH /api/watchlist/playlists/reorder`
+
+Set the display order of all the user's playlists. `order` must be the full set of the user's playlist ids, in the desired order.
+
+**Body**
+```json
+{ "order": ["<playlist-id-1>", "<playlist-id-2>"] }
+```
+
+**Response** `200`
+```json
+{ "playlists": ["<playlist-id-1>", "<playlist-id-2>"] }
+```
+
+**Errors**
+- `400 { "error": "order must be an array of playlist ids" }`
+- `404 { "error": "One or more playlists do not belong to the user" }`
+
+---
+
+### `PATCH /api/watchlist/playlists/:id`
+
+Rename a playlist.
+
+**Body**
+```json
+{ "name": "Swing Trades" }
+```
+
+**Response** `200`
+```json
+{ "playlist": { "id": "...", "name": "Swing Trades", "position": 0 } }
+```
+
+**Errors**
+- `400 { "error": "name is required" }`
+- `404 { "error": "Playlist not found" }`
+- `409 { "error": "A playlist named 'Swing Trades' already exists" }`
+
+---
+
+### `DELETE /api/watchlist/playlists/:id`
+
+Delete a playlist. Watchlist items are preserved (only the playlist grouping is removed).
+
+**Response** `204` (no body)
+
+**Errors**
+- `404 { "error": "Playlist not found" }`
+
+---
+
+### `GET /api/watchlist/playlists/:id/items`
+
+Items in a playlist with live prices, ordered by `position`.
+
+**Response** `200`
+```json
+{
+  "items": [
+    { "id": "...", "symbol": "RELIANCE", "name": "RELIANCE INDUSTRIES LTD.", "price": 2900.0, "change": 45.0, "change_percent": 1.58 }
+  ]
+}
+```
+
+**Errors**
+- `404 { "error": "Playlist not found" }`
+
+---
+
+### `POST /api/watchlist/playlists/:id/items`
+
+Add a stock to a playlist. Auto-adds it to the watchlist if not already present. Idempotent.
+
+**Body**
+```json
+{ "symbol": "RELIANCE" }
+```
+
+**Response** `200`
+```json
+{ "symbol": "RELIANCE", "playlist_id": "..." }
+```
+
+**Errors**
+- `400 { "error": "symbol is required" }`
+- `404 { "error": "Playlist not found" }` / `{ "error": "No stock found for symbol 'FOO'" }`
+
+---
+
+### `DELETE /api/watchlist/playlists/:id/items/:symbol`
+
+Remove a stock from a playlist only — the stock remains in the watchlist.
+
+**Response** `204` (no body)
+
+**Errors**
+- `404 { "error": "Playlist not found" }` / `{ "error": "'FOO' is not in this playlist" }`
+
+---
+
+### `PATCH /api/watchlist/playlists/:id/items/reorder`
+
+Set the order of items within a playlist. `order` must be the full set of symbols currently in the playlist, in the desired order.
+
+**Body**
+```json
+{ "order": ["RELIANCE", "TCS"] }
+```
+
+**Response** `200`
+```json
+{ "symbols": ["RELIANCE", "TCS"] }
+```
+
+**Errors**
+- `400 { "error": "order must be an array of symbols" }`
+- `404 { "error": "Playlist not found" }` / `{ "error": "One or more symbols are not in this playlist" }`
+
+---
+
 ## Authentication
 
 Endpoints under `/api/auth/*` back the phone-OTP + Google sign-in flow used by `sodhani-web`. They read and write a `users` table (see `db/migrations/0001_create_users.sql`) in the same Postgres database as the market-data tables.
@@ -1301,12 +1534,13 @@ Comments on a purchased call, oldest first.
 - Endpoints that look up a single instrument (`/api/quote`, `/api/history`) return `404` with a descriptive message when nothing matches.
 - `/api/auth/*` and `/api/ra/*` follow the same status-code conventions but shape errors as `{ "detail": "..." }` — see [Authentication](#authentication) and [Research Analyst Dashboard and Paid Calls](#research-analyst-dashboard-and-paid-calls).
 - `/api/calls/*`, `/api/payments/*`, and `/api/me/*` shape errors as `{ "error": "..." }`, matching the market-route convention.
+- `/api/watchlist/*` uses `{ "detail": "..." }` for auth failures (from `requireAuth`) and `{ "error": "..." }` for everything else — see [Watchlist and Playlists](#watchlist-and-playlists).
 
 ## Security notes
 
 - All queries are parameterized — no raw string interpolation into SQL.
-- Market-data routes (`/api/*`, excluding `/api/auth/*`) only ever run `SELECT` statements; they have no write path.
-- `/api/auth/*` writes only to `users`; `/api/ra/*` writes only to `research_analysts`, `research_calls`, and `call_comments`; `/api/payments/*` and the webhook write only to `payments` and `purchased_calls` (via `completePurchase` in `src/services/purchaseService.ts`) — all via parameterized queries, each scoped to its own table(s).
+- Market-data routes (`/api/*`, excluding `/api/auth/*` and `/api/watchlist/*`) only ever run `SELECT` statements; they have no write path.
+- `/api/auth/*` writes only to `users`; `/api/ra/*` writes only to `research_analysts`, `research_calls`, and `call_comments`; `/api/payments/*` and the webhook write only to `payments` and `purchased_calls` (via `completePurchase` in `src/services/purchaseService.ts`); `/api/watchlist/*` writes only to `watchlist_items`, `watchlist_playlists`, and `watchlist_playlist_items` — all via parameterized queries, each scoped to its own table(s) and filtered by the authenticated user's id (the playlist reorder/rename/delete and item routes all verify ownership server-side).
 - Session tokens are JWTs signed with `JWT_SECRET` (consumer users) or `RA_JWT_SECRET` (Research Analysts) — two independent secrets, so a token issued for one identity can never authenticate as the other. Treat both as secrets and rotate them (which invalidates all sessions for that identity) if ever exposed.
 - Razorpay payment completion (`completePurchase`) only runs after a checkout signature (`/api/payments/verify`) or webhook signature (`/api/payments/webhook`, verified against `RAZORPAY_WEBHOOK_SECRET`) has been cryptographically verified, and is idempotent on `razorpay_order_id` — safe to run twice for the same order (e.g. once from the client, once from the webhook).
 - MSG91 access-token verification proves the token is valid to MSG91, not which phone number it belongs to — `phone_number` is otherwise trusted from the request body since only `sodhani-web`'s own frontend constructs these requests. This is an accepted trust boundary given the current deployment model, not an oversight.

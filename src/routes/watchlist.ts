@@ -130,7 +130,34 @@ router.get('/playlists', requireAuth, asyncHandler(async (req, res) => {
      ORDER BY p.position ASC, p.created_at ASC`,
     [req.authUserId]
   );
-  res.status(200).json({ playlists: result.rows });
+  res.status(200).json({
+    playlists: result.rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      position: row.position,
+      item_count: row.item_count,
+    })),
+  });
+}));
+
+// GET /api/watchlist/playlists/memberships - map of symbol -> playlist ids for the
+// user's watchlist. Drives the "add to playlist" checkbox sheet without N+1 fetches.
+// Registered before /playlists/:id so "memberships" is never captured as an id.
+router.get('/playlists/memberships', requireAuth, asyncHandler(async (req, res) => {
+  const result = await pool.query(
+    `SELECT UPPER(wi.symbol) AS symbol,
+            COALESCE(array_agg(wpi.playlist_id) FILTER (WHERE wpi.playlist_id IS NOT NULL), '{}') AS playlist_ids
+     FROM watchlist_items wi
+     LEFT JOIN watchlist_playlist_items wpi ON wpi.watchlist_item_id = wi.id
+     WHERE wi.user_id = $1
+     GROUP BY wi.symbol`,
+    [req.authUserId]
+  );
+  const memberships: Record<string, string[]> = {};
+  for (const row of result.rows) {
+    memberships[row.symbol] = row.playlist_ids;
+  }
+  res.status(200).json({ memberships });
 }));
 
 // POST /api/watchlist/playlists - create a playlist. 409 on duplicate name.

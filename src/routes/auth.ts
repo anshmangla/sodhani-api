@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { pool } from '../db/pool';
-import { signAuthToken } from '../auth/jwt';
-import { verifyMsg91AccessToken } from '../auth/msg91';
+import { signAuthToken, signSignupToken, verifySignupToken } from '../auth/jwt';
+import { verifyMsg91AccessToken, sendMsg91Otp, verifyMsg91Otp } from '../auth/msg91';
 import { verifyGoogleIdToken } from '../auth/google';
 import { requireAuth } from '../auth/middleware';
 
@@ -35,6 +35,98 @@ router.post('/check-phone', asyncHandler(async (req, res) => {
     return;
   }
   res.status(200).json({ ok: true });
+}));
+
+// POST /api/auth/send-otp { phone_number } — sends a server-side SMS OTP via the
+// MSG91 authkey (cookie-free, unlike the widget flow). Used by the Flutter app.
+router.post('/send-otp', asyncHandler(async (req, res) => {
+  const { phone_number } = req.body ?? {};
+  if (!phone_number) {
+    res.status(400).json({ detail: 'phone_number is required' });
+    return;
+  }
+  try {
+    await sendMsg91Otp(phone_number);
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('MSG91 send OTP failed:', err);
+    res.status(502).json({ detail: 'Could not send OTP' });
+  }
+}));
+
+// POST /api/auth/verify-otp { phone_number, otp } — verifies the SMS OTP. On
+// success returns `{ token, user }` for an existing account, or
+// `{ signup_token, requires_profile: true }` for a new number (auto-signup).
+router.post('/verify-otp', asyncHandler(async (req, res) => {
+  const { phone_number, otp } = req.body ?? {};
+  if (!phone_number || !otp) {
+    res.status(400).json({ detail: 'phone_number and otp are required' });
+    return;
+  }
+
+  const verified = await verifyMsg91Otp(phone_number, otp);
+  if (!verified) {
+    res.status(401).json({ detail: 'OTP verification failed' });
+    return;
+  }
+
+  const result = await pool.query(
+    `SELECT ${USER_COLUMNS}, token_version FROM users WHERE phone_number = $1`,
+    [phone_number]
+  );
+
+  if (result.rows.length === 0) {
+    // New number: issue a short-lived signup token; the profile step completes it.
+    const signupToken = signSignupToken(phone_number);
+    res.status(200).json({ signup_token: signupToken, requires_profile: true });
+    return;
+  }
+
+  const { token_version, ...user } = result.rows[0];
+  const token = signAuthToken(user.id, token_version);
+  res.status(200).json({ token, user });
+}));
+
+// POST /api/auth/complete-signup { signup_token, name, age?, email? } — creates
+// the account for a verified phone number and returns a session.
+router.post('/complete-signup', asyncHandler(async (req, res) => {
+  const { signup_token, name, age, email } = req.body ?? {};
+  if (!signup_token || !name) {
+    res.status(400).json({ detail: 'signup_token and name are required' });
+    return;
+  }
+
+  let phone: string;
+  try {
+    phone = verifySignupToken(signup_token).phone;
+  } catch {
+    res.status(401).json({ detail: 'Signup token is invalid or expired' });
+    return;
+  }
+
+  const existing = await pool.query('SELECT id FROM users WHERE phone_number = $1', [phone]);
+  if (existing.rows.length > 0) {
+    res.status(409).json({ detail: 'An account with this phone number already exists' });
+    return;
+  }
+
+  if (email) {
+    const existingEmail = await pool.query('SELECT id FROM users WHERE lower(email) = lower($1)', [email]);
+    if (existingEmail.rows.length > 0) {
+      res.status(409).json({ detail: 'An account with this email already exists' });
+      return;
+    }
+  }
+
+  const result = await pool.query(
+    `INSERT INTO users (name, age, email, phone_number, auth_provider)
+     VALUES ($1, $2, $3, $4, 'otp')
+     RETURNING ${USER_COLUMNS}`,
+    [name, age ?? null, email ?? null, phone]
+  );
+  const user = result.rows[0];
+  const token = signAuthToken(user.id, 0);
+  res.status(201).json({ token, user });
 }));
 
 // POST /api/auth/verify-otp-signup { access_token, name, age, email?, phone_number }

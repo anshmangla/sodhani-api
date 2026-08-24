@@ -54,7 +54,9 @@ router.post('/order', requireAuth, asyncHandler(async (req, res) => {
   }
 
   const receipt = `${callId.slice(0, 8)}-${Date.now()}`;
-  const order = await createOrder(row.price_paise, receipt, {
+  const amountWithTax = Math.round(row.price_paise * 1.05);
+  
+  const order = await createOrder(amountWithTax, receipt, {
     user_id: req.authUserId!,
     call_id: callId,
   }, row.razorpay_account_id);
@@ -63,12 +65,12 @@ router.post('/order', requireAuth, asyncHandler(async (req, res) => {
     `INSERT INTO payments (user_id, call_id, razorpay_order_id, amount_paise, status)
      VALUES ($1, $2, $3, $4, 'created')
      RETURNING id`,
-    [req.authUserId, callId, order.id, row.price_paise]
+    [req.authUserId, callId, order.id, amountWithTax]
   );
 
   res.status(201).json({
     order_id: order.id,
-    amount_paise: row.price_paise,
+    amount_paise: amountWithTax,
     key_id: process.env.RAZORPAY_KEY_ID,
   });
 }));
