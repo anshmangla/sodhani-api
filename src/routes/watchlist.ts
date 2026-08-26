@@ -64,7 +64,7 @@ async function playlistBelongsToUser(playlistId: string, userId: string): Promis
 // GET /api/watchlist - all watchlist items with server-side joined live prices.
 router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const result = await pool.query(
-    `SELECT wi.id, UPPER(cs."TckrSymb") AS symbol, cs."FinInstrmNm" AS name,
+    `SELECT wi.id, UPPER(wi.symbol) AS symbol, cs."FinInstrmNm" AS name,
             hp_latest."true_close" AS price,
             (hp_latest."true_close"::float - hp_latest."true_open"::float) AS change,
             CASE WHEN hp_latest."true_open"::float > 0
@@ -73,7 +73,7 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
             END AS change_percent,
             wi.created_at
      FROM watchlist_items wi
-     JOIN company_stock cs ON UPPER(cs."TckrSymb") = UPPER(wi.symbol)
+     LEFT JOIN company_stock cs ON cs."FinInstrmId" = wi.symbol
      ${PRICE_LATERAL}
      WHERE wi.user_id = $1
      ORDER BY wi.created_at DESC`,
@@ -91,10 +91,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
     return;
   }
   const normalized = symbol.trim().toUpperCase();
-  if (!(await stockExists(normalized))) {
-    res.status(404).json({ error: `No stock found for symbol '${normalized}'` });
-    return;
-  }
+
   const result = await pool.query(
     `INSERT INTO watchlist_items (user_id, symbol)
      VALUES ($1, $2)
@@ -279,7 +276,7 @@ router.get('/playlists/:id/items', requireAuth, asyncHandler(async (req, res) =>
     return;
   }
   const result = await pool.query(
-    `SELECT wi.id, UPPER(cs."TckrSymb") AS symbol, cs."FinInstrmNm" AS name,
+    `SELECT wi.id, UPPER(wi.symbol) AS symbol, cs."FinInstrmNm" AS name,
             hp_latest."true_close" AS price,
             (hp_latest."true_close"::float - hp_latest."true_open"::float) AS change,
             CASE WHEN hp_latest."true_open"::float > 0
@@ -290,7 +287,7 @@ router.get('/playlists/:id/items', requireAuth, asyncHandler(async (req, res) =>
             wi.created_at
      FROM watchlist_playlist_items wpi
      JOIN watchlist_items wi ON wi.id = wpi.watchlist_item_id
-     JOIN company_stock cs ON UPPER(cs."TckrSymb") = UPPER(wi.symbol)
+     LEFT JOIN company_stock cs ON cs."FinInstrmId" = wi.symbol
      ${PRICE_LATERAL}
      WHERE wpi.playlist_id = $1
      ORDER BY wpi.position ASC, wpi.added_at ASC`,
@@ -313,10 +310,7 @@ router.post('/playlists/:id/items', requireAuth, asyncHandler(async (req, res) =
     res.status(404).json({ error: 'Playlist not found' });
     return;
   }
-  if (!(await stockExists(normalized))) {
-    res.status(404).json({ error: `No stock found for symbol '${normalized}'` });
-    return;
-  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

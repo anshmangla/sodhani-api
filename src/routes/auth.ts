@@ -247,6 +247,47 @@ router.get('/me', requireAuth, asyncHandler(async (req, res) => {
   }
   res.status(200).json({ user: result.rows[0] });
 }));
+// POST /api/auth/send-delete-otp
+router.post('/send-delete-otp', requireAuth, asyncHandler(async (req, res) => {
+  const user = (await pool.query(`SELECT phone_number FROM users WHERE id = $1`, [req.authUserId])).rows[0];
+  if (!user || !user.phone_number) {
+    res.status(200).json({ ok: true, skipped: true });
+    return;
+  }
+  // Let the frontend SDK handle the actual OTP sending via the widget flow
+  res.status(200).json({ ok: true, skipped: false, phone_number: user.phone_number });
+}));
+
+// POST /api/auth/delete-account
+router.post('/delete-account', requireAuth, asyncHandler(async (req, res) => {
+  const { access_token } = req.body ?? {};
+  const user = (await pool.query(`SELECT phone_number FROM users WHERE id = $1`, [req.authUserId])).rows[0];
+  
+  if (user && user.phone_number) {
+    if (!access_token) {
+      res.status(400).json({ detail: 'access_token is required' });
+      return;
+    }
+    const verified = await verifyMsg91AccessToken(access_token);
+    if (!verified) {
+      res.status(401).json({ detail: 'OTP verification failed' });
+      return;
+    }
+  }
+
+  await pool.query('BEGIN');
+  try {
+    await pool.query('DELETE FROM purchased_calls WHERE user_id = $1', [req.authUserId]);
+    await pool.query('DELETE FROM payments WHERE user_id = $1', [req.authUserId]);
+    await pool.query('DELETE FROM users WHERE id = $1', [req.authUserId]);
+    await pool.query('COMMIT');
+    res.status(200).json({ ok: true });
+  } catch (e) {
+    await pool.query('ROLLBACK');
+    throw e;
+  }
+}));
+
 
 // POST /api/auth/logout
 router.post('/logout', requireAuth, asyncHandler(async (req, res) => {
