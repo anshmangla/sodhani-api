@@ -4,6 +4,12 @@ import { pool } from '../db/pool';
 import { signRaAuthToken } from '../auth/raJwt';
 import { requireRaAuth } from '../auth/raMiddleware';
 import { fetchProductStatus } from '../services/razorpayService';
+import {
+  profilePictureUpload,
+  handleUploadError,
+  profilePictureUrlForFile,
+  deleteOldProfilePicture,
+} from '../lib/profilePicture';
 
 const router = Router();
 
@@ -149,6 +155,25 @@ router.get('/me', requireRaAuth, asyncHandler(async (req, res) => {
   const { razorpay_account_id, razorpay_product_id, ...publicRa } = ra;
   res.status(200).json({ ra: publicRa });
 }));
+
+// POST /api/ra/profile-picture (multipart, field name "picture")
+router.post('/profile-picture', requireRaAuth, profilePictureUpload, asyncHandler(async (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ detail: 'picture file is required' });
+    return;
+  }
+
+  const current = await pool.query('SELECT profile_picture_url FROM research_analysts WHERE id = $1', [req.authRaId]);
+  const url = profilePictureUrlForFile(req.file.filename);
+  await pool.query(
+    'UPDATE research_analysts SET profile_picture_url = $1, updated_at = now() WHERE id = $2',
+    [url, req.authRaId]
+  );
+  await deleteOldProfilePicture(current.rows[0]?.profile_picture_url);
+
+  const raResult = await pool.query(`SELECT ${RA_COLUMNS} FROM research_analysts WHERE id = $1`, [req.authRaId]);
+  res.status(200).json({ ra: raResult.rows[0] });
+}), handleUploadError);
 
 // POST /api/ra/logout
 router.post('/logout', requireRaAuth, asyncHandler(async (req, res) => {

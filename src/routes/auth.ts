@@ -4,10 +4,16 @@ import { signAuthToken, signSignupToken, verifySignupToken } from '../auth/jwt';
 import { verifyMsg91AccessToken, sendMsg91Otp, verifyMsg91Otp } from '../auth/msg91';
 import { verifyGoogleIdToken } from '../auth/google';
 import { requireAuth } from '../auth/middleware';
+import {
+  profilePictureUpload,
+  handleUploadError,
+  profilePictureUrlForFile,
+  deleteOldProfilePicture,
+} from '../lib/profilePicture';
 
 const router = Router();
 
-const USER_COLUMNS = 'id, name, age, email, phone_number';
+const USER_COLUMNS = 'id, name, age, email, phone_number, profile_picture_url';
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -247,6 +253,25 @@ router.get('/me', requireAuth, asyncHandler(async (req, res) => {
   }
   res.status(200).json({ user: result.rows[0] });
 }));
+// POST /api/auth/profile-picture (multipart, field name "picture")
+router.post('/profile-picture', requireAuth, profilePictureUpload, asyncHandler(async (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ detail: 'picture file is required' });
+    return;
+  }
+
+  const current = await pool.query('SELECT profile_picture_url FROM users WHERE id = $1', [req.authUserId]);
+  const url = profilePictureUrlForFile(req.file.filename);
+  await pool.query(
+    'UPDATE users SET profile_picture_url = $1, updated_at = now() WHERE id = $2',
+    [url, req.authUserId]
+  );
+  await deleteOldProfilePicture(current.rows[0]?.profile_picture_url);
+
+  const userResult = await pool.query(`SELECT ${USER_COLUMNS} FROM users WHERE id = $1`, [req.authUserId]);
+  res.status(200).json({ user: userResult.rows[0] });
+}), handleUploadError);
+
 // POST /api/auth/send-delete-otp
 router.post('/send-delete-otp', requireAuth, asyncHandler(async (req, res) => {
   const user = (await pool.query(`SELECT phone_number FROM users WHERE id = $1`, [req.authUserId])).rows[0];

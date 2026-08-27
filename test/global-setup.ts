@@ -6,6 +6,8 @@ import {
   adminDbUrl,
   TEST_USER_ID,
   TEST_USER2_ID,
+  TEST_RA_ID,
+  TEST_RA2_ID,
   SEEDED_STOCKS,
 } from './constants';
 
@@ -49,6 +51,18 @@ export default async function globalSetup() {
      VALUES ($1, 'Test User Two', '+919999999992', 0)
      ON CONFLICT (id) DO NOTHING`,
     [TEST_USER2_ID]
+  );
+  await db.query(
+    `INSERT INTO research_analysts (id, email, password_hash, full_name, token_version)
+     VALUES ($1, 'test-ra@example.com', 'not-a-real-hash', 'Test RA', 0)
+     ON CONFLICT (id) DO NOTHING`,
+    [TEST_RA_ID]
+  );
+  await db.query(
+    `INSERT INTO research_analysts (id, email, password_hash, full_name, token_version)
+     VALUES ($1, 'test-ra-2@example.com', 'not-a-real-hash', 'Test RA Two', 0)
+     ON CONFLICT (id) DO NOTHING`,
+    [TEST_RA2_ID]
   );
 
   // 4. Create the scraper-owned market tables the watchlist queries join against.

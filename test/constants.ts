@@ -23,10 +23,13 @@ export function adminDbUrl(): string {
 }
 
 export const TEST_JWT_SECRET = 'watchlist-test-secret';
+export const TEST_RA_JWT_SECRET = 'ra-test-secret';
 
 // Fixed UUIDs so tests can reference them without round-tripping the DB.
 export const TEST_USER_ID = '00000000-0000-0000-0000-000000000001';
 export const TEST_USER2_ID = '00000000-0000-0000-0000-000000000002';
+export const TEST_RA_ID = '00000000-0000-0000-0000-000000000101';
+export const TEST_RA2_ID = '00000000-0000-0000-0000-000000000102';
 
 export const SEEDED_STOCKS = [
   { finInstrmId: '500325', symbol: 'RELIANCE', name: 'Reliance Industries Ltd', open: 2950, close: 3000 },

@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
 import marketRouter from './routes/market';
 import authRouter from './routes/auth';
 import raAuthRouter from './routes/raAuth';
@@ -20,6 +21,8 @@ app.use(express.json());
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
+
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 app.use('/api', marketRouter);
 app.use('/api/auth', authRouter);
