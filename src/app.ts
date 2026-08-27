@@ -9,6 +9,7 @@ import callsRouter from './routes/calls';
 import paymentsRouter from './routes/payments';
 import paymentsWebhookRouter from './routes/paymentsWebhook';
 import myCallsRouter from './routes/myCalls';
+import watchlistRouter from './routes/watchlist';
 
 export const app = express();
 
@@ -29,6 +30,7 @@ app.use('/api/calls', callsRouter);
 app.use('/api/payments', paymentsRouter);
 app.use('/api/payments/webhook', paymentsWebhookRouter);
 app.use('/api/me', myCallsRouter);
+app.use('/api/watchlist', watchlistRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });

@@ -4,7 +4,7 @@
 -- since the webhook payload itself only carries the settlement, not which
 -- transfers it covers.
 ALTER TABLE ra_transfers
-  ADD COLUMN settlement_status TEXT NOT NULL DEFAULT 'pending' CHECK (settlement_status IN ('pending', 'settled')),
-  ADD COLUMN razorpay_settlement_id TEXT,
-  ADD COLUMN razorpay_settlement_utr TEXT,
-  ADD COLUMN settled_at TIMESTAMPTZ;
+  ADD COLUMN IF NOT EXISTS settlement_status TEXT NOT NULL DEFAULT 'pending' CHECK (settlement_status IN ('pending', 'settled')),
+  ADD COLUMN IF NOT EXISTS razorpay_settlement_id TEXT,
+  ADD COLUMN IF NOT EXISTS razorpay_settlement_utr TEXT,
+  ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;

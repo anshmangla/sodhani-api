@@ -1,6 +1,6 @@
 # sodhani-api
 
-A small REST API over the PostgreSQL database that [`sodhaniScrap`](https://github.com/Raman-pro/sodhaniScrap) populates. Market-data endpoints (`/api/*`) are read-only — they just query the tables `sodhaniScrap` keeps in sync and serve them as JSON: top gainers/losers, volume shockers, price/volume quotes, historical OHLCV data, and BSE announcements. Authentication endpoints (`/api/auth/*`) are the exception: they own a `users` table in the same database and are the app's only write path (see [Authentication](#authentication) below).
+A small REST API over the PostgreSQL database that [`sodhaniScrap`](https://github.com/Raman-pro/sodhaniScrap) populates. Market-data endpoints (`/api/*`) are read-only — they just query the tables `sodhaniScrap` keeps in sync and serve them as JSON: top gainers/losers, volume shockers, price/volume quotes, historical OHLCV data, and BSE announcements. Authentication endpoints (`/api/auth/*`) are the exception: they own a `users` table in the same database (see [Authentication](#authentication) below). The per-user watchlist and playlists (`/api/watchlist/*`) are another write path — they own the `watchlist_items`, `watchlist_playlists`, and `watchlist_playlist_items` tables (see [Watchlist and Playlists](#watchlist-and-playlists) below).
 
 This repo also hosts the **Research Analyst (RA) dashboard and paid-calls** feature: Research Analysts (a separate identity from regular `users`, authenticated via their own JWT) publish "research calls" (Buy/Hold/Sell recommendations on a stock), optionally gated behind a Razorpay payment, and consumers browse/purchase them. See [Research Analyst Dashboard and Paid Calls](#research-analyst-dashboard-and-paid-calls) below.
 
@@ -58,12 +58,14 @@ src/
     ├── calls.ts          # /api/calls/* — public call browsing (list/detail/comments)
     ├── payments.ts       # /api/payments/order, /verify — Razorpay checkout flow
     ├── paymentsWebhook.ts # /api/payments/webhook — Razorpay server-to-server webhook
-    └── myCalls.ts        # /api/me/calls, /calls/:id/comments — a consumer's purchased calls
+    ├── myCalls.ts        # /api/me/calls, /calls/:id/comments — a consumer's purchased calls
+    └── watchlist.ts      # /api/watchlist/* — per-user watchlist + named playlists
 db/
 └── migrations/
     ├── 0001_create_users.sql        # creates the users table
     ├── 0002_research_analysts.sql   # creates the research_analysts table
-    └── 0003_research_calls.sql      # creates research_calls, call_comments, payments, purchased_calls
+    ├── 0003_research_calls.sql      # creates research_calls, call_comments, payments, purchased_calls
+    └── 0004_watchlist_playlists.sql # creates watchlist_items, watchlist_playlists, watchlist_playlist_items
 scripts/
 ├── seed-research-analysts.ts  # npm run seed:ra — creates dummy RA dev accounts
 └── verify-ra-transfers.ts     # npm run verify:ra-transfers — ad-hoc verification script for the RA transfers/earnings ledger, run against a real dev database
@@ -77,9 +79,12 @@ deploy/
 |---|---|---|
 | `bse_top_gainers_losers` | `sodhaniScrap` live poll of BSE's full market gainers/losers feed | `/api/top-gainers`, `/api/top-losers` |
 | `bse_spurt_volume` | `sodhaniScrap` live poll of BSE's spurt-volume feed | `/api/volume-shockers` |
-| `company_stock` | `sodhaniScrap` bootstrap from `companies.json` (a curated **BSE-only watchlist**, currently ~2,359 companies) + bhavcopy | `/api/quote`, `/api/history`, `/api/stocks` |
+| `company_stock` | `sodhaniScrap` bootstrap from `companies.json` (a curated **BSE-only watchlist**, currently ~2,359 companies) + bhavcopy | `/api/quote`, `/api/quotes`, `/api/history`, `/api/stocks` |
 | `historical_prices` | `sodhaniScrap` Yahoo Finance historical catch-up, keyed to the same watchlist | `/api/history` |
-| `bse_announcements` | `sodhaniScrap` incremental BSE announcements sync | `/api/announcements` |
+| `bse_announcements` | `sodhaniScrap` incremental BSE announcements sync | `/api/announcements/:symbol` |
+| `stock_metrics` | `sodhaniScrap` nightly valuation/profitability worker | `/api/screener`, `/api/metrics/:symbol` |
+| `technical_analysis` | `sodhaniScrap` nightly technical-indicator worker | `/api/technical/:symbol` |
+| `company_sectors` | `sodhaniScrap` NSE industry-classification sync | `/api/screener` (industry filter/labels only) |
 | `bse_indices` | `sodhaniScrap` BSE indices worker (master list of SENSEX + ~77 sectoral/thematic indices) | `/api/indices`, `/api/indices/:code/history` |
 | `bse_index_history` | `sodhaniScrap` BSE indices worker (unified daily-close + intraday-tick series) | `/api/indices`, `/api/indices/:code/history` |
 | `bse_index_constituents` | `sodhaniScrap` BSE index constituents sync (BSE HeatMapData feed, capped at 30 rows/index upstream) | `/api/indices/:code/constituents` |
@@ -112,16 +117,22 @@ Copy `.env.example` to `.env` and fill in:
 npm install
 cp .env.example .env   # fill in DATABASE_URL, JWT_SECRET, MSG91_AUTH_KEY, GOOGLE_CLIENT_ID,
                         # RA_JWT_SECRET, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET
-psql "$DATABASE_URL" -f db/migrations/0001_create_users.sql          # creates the users table
-psql "$DATABASE_URL" -f db/migrations/0002_research_analysts.sql     # creates the research_analysts table
-psql "$DATABASE_URL" -f db/migrations/0003_research_calls.sql        # creates research_calls, call_comments, payments, purchased_calls
-psql "$DATABASE_URL" -f db/migrations/0004_ra_onboarding.sql         # renames username to email, adds razorpay_account_id/razorpay_stakeholder_id/onboarding_status to research_analysts
-psql "$DATABASE_URL" -f db/migrations/0005_ra_transfers.sql          # creates ra_transfers (RA payout ledger)
-psql "$DATABASE_URL" -f db/migrations/0006_ra_transfer_settlements.sql # adds settlement_status/razorpay_settlement_id/razorpay_settlement_utr/settled_at to ra_transfers
-psql "$DATABASE_URL" -f db/migrations/0007_ra_product_id.sql          # adds razorpay_product_id to research_analysts (used to self-heal onboarding_status)
+npm run migrate         # applies all pending db/migrations/*.sql (idempotent, safe to re-run)
 npm run seed:ra          # creates dummy RA dev accounts (see scripts/seed-research-analysts.ts)
 npm run dev              # runs src/index.ts directly via ts-node
 ```
+
+## Testing
+
+```bash
+npm test                 # vitest + supertest integration suite against a dedicated
+                         # sodhani_api_test database (created automatically)
+```
+
+Tests create/seeded data live in `test/` and run against `DATABASE_URL_TEST` (defaults to
+`<your DATABASE_URL>` with the database name swapped to `sodhani_api_test`), so your real
+data is never touched. A test user, JWT, and minimal `company_stock`/`historical_prices`
+rows are seeded automatically.
 
 ## Build & run in production
 
@@ -158,9 +169,16 @@ npm start                # node dist/index.js
 ```bash
 cd /opt/sodhani-api
 git pull origin main
+npm install          # in case dependencies changed
+npm run migrate      # apply any new db/migrations (idempotent — safe even on an existing DB)
 npm run build
 sudo systemctl restart sodhani-api
 ```
+
+`npm run migrate` is safe to run on the VM where earlier migrations were applied manually:
+all DDL in `db/migrations/*.sql` is idempotent (`CREATE ... IF NOT EXISTS`), so already-present
+tables are skipped and only new ones are created. Each applied migration is recorded in the
+`schema_migrations` table (created if missing).
 
 ## API Reference
 
@@ -302,6 +320,39 @@ GET /api/quote/ANDHRAPET
 
 ---
 
+### `GET /api/quotes`
+
+Batch form of `/api/quote/:symbol` — one round trip for a list of tickers/scrip codes instead of one request per instrument. Same row shape, same case-insensitive ticker-or-scrip-code matching per code.
+
+| Query param | Required | Notes |
+|---|---|---|
+| `codes` | yes | Comma-separated tickers and/or scrip codes, e.g. `codes=500325,532540,RELIANCE`. Deduplicated and capped at 50 — extra codes beyond the cap are silently dropped, not an error. |
+
+**Example**
+```
+GET /api/quotes?codes=500325,532540,RELIANCE
+```
+
+**Response**
+```json
+{
+  "count": 2,
+  "quotes": [
+    { "FinInstrmId": "500325", "TckrSymb": "RELIANCE", "...": "same shape as /api/quote/:symbol" },
+    { "FinInstrmId": "532540", "TckrSymb": "TCS", "...": "..." }
+  ]
+}
+```
+
+Codes that don't match anything in the watchlist are **silently omitted** rather than causing an error — `RELIANCE` and `500325` above both resolve to the same instrument, so the count can be lower than the number of codes requested even when every code is valid. Diff the requested list against the returned `TckrSymb`/`FinInstrmId` values to see what didn't resolve.
+
+**400** if `codes` is missing or empty:
+```json
+{ "error": "Query param 'codes' is required (comma-separated ticker symbols or scrip codes)." }
+```
+
+---
+
 ### `GET /api/history/:symbol`
 
 OHLCV history for one instrument, ordered chronologically (oldest to newest). Time-based bucketing is applied dynamically based on the requested range (e.g., weekly buckets for `1y` and `5y`, monthly for `max`). Data is downsampled to ~100 points via LTTB for `line` charts to optimize client-side rendering. Same `:symbol` matching rules as `/api/quote`.
@@ -394,50 +445,58 @@ Note: this only searches the curated watchlist, not the full BSE market — see 
 
 ---
 
-### `GET /api/announcements`
+### `GET /api/announcements/:symbol`
 
-Recent BSE corporate announcements/filings.
+Recent BSE corporate announcements/filings for one instrument. `:symbol` is **required** — this
+is a path param, not a query param — and matches (case-insensitive) against the ticker or the
+numeric BSE scrip code, same rule as `/api/quote`.
 
 | Query param | Default | Max |
 |---|---|---|
 | `limit` | 20 | 100 |
-| `scrip_cd` | *(none — all companies)* | — |
 
 **Examples**
 ```
-GET /api/announcements
-GET /api/announcements?scrip_cd=500325&limit=10
+GET /api/announcements/500295
+GET /api/announcements/VEDL?limit=10
 ```
 
 **Response**
 ```json
 {
-  "count": 10,
+  "count": 1,
   "announcements": [
     {
-      "newsid": "a4d8...",
-      "scrip_cd": "500325",
-      "news_dt": "2026-07-24T10:00:00.000Z",
-      "newssub": "Financial Results",
-      "headline": "Outcome of Board Meeting",
-      "slongname": "RELIANCE INDUSTRIES LTD.",
-      "announcement_type": "C",
-      "attachmentname": "...",
+      "newsid": "d0a20d46-c0c1-45bd-84be-a0edc80cb063",
+      "scrip_cd": "500295",
+      "news_dt": "2026-07-30T15:14:28.183Z",
+      "newssub": "Vedanta Ltd - 500295 - Announcement under Regulation 30 (LODR)-Analyst / Investor Meet - Outcome",
+      "headline": "Please refer the enclosed file",
+      "slongname": "Vedanta Ltd",
+      "announcement_type": "A",
+      "attachmentname": "3eee2919-15cb-4935-b161-fdc706d365ca.pdf",
       "categoryname": "Company Update"
+    }
+  ]
 }
 ```
+
+`count: 0` (not an error) if the instrument has no announcements on file.
 
 ---
 
 ### `GET /api/static-stock`
 
-Fetches static JSON file contents generated by `sodhaniScrap` for a specific stock from the `output_consolidated` or `output` directories.
+Fetches static JSON file contents generated by `sodhaniScrap` (a `screener.in` scrape) for one
+stock, from the `output` directory (`STATIC_JSON_DIR`, defaults to `/opt/sodhaniScrap/output`).
+If `query` doesn't match a file directly, the route also tries the BSE→NSE symbol mapping in
+`exchange_code_mappings.json` before giving up.
 
 | Query param | Default | Max |
 |---|---|---|
 | `query` | **(required)** | — |
 
-`query` is matched (case-insensitive) against the file names in the output directories (with or without `.json` extension).
+`query` is matched (case-insensitive) against the file names in the output directory (with or without `.json` extension).
 
 **Examples**
 ```
@@ -459,9 +518,159 @@ GET /api/static-stock?query=3BBLACKBIO
 }
 ```
 
-**404** if the static JSON file isn't found in either output directory:
+**404** if the static JSON file isn't found:
 ```json
 { "error": "Static JSON not found for 'FOO'" }
+```
+
+---
+
+### `GET /api/static-stock-consolidated`
+
+Same lookup as `/api/static-stock` (including the BSE→NSE fallback), but reads from a **separate**
+directory — `output_consolidated` (`CONSOLIDATED_JSON_DIR`, defaults to
+`/opt/sodhaniScrap/output_consolidated`) — which carries a richer payload: `key_metrics`,
+`pros_cons`, `quarterly`/`yearly` financials, shareholding pattern, and peer comparison, on top of
+the same `overview` block `/api/static-stock` returns.
+
+| Query param | Default | Max |
+|---|---|---|
+| `query` | **(required)** | — |
+
+**Example**
+```
+GET /api/static-stock-consolidated?query=500325
+```
+
+**Response** (truncated — the full payload also carries `pros_cons`, `quarterly`, `yearly`, `shareholding`, `peers` and more)
+```json
+{
+  "ticker": "RELIANCE",
+  "url": "https://www.screener.in/company/RELIANCE/consolidated/",
+  "overview": {
+    "company_name": "Reliance Industries Ltd",
+    "current_price": "18,03,481",
+    "about": "",
+    "website": "http://www.ril.com",
+    "bse_link": "https://www.bseindia.com/stock-share-price/reliance-industries-ltd/RELIANCE/500325/",
+    "nse_link": "https://www.nseindia.com/get-quotes/equity?symbol=RELIANCE"
+  },
+  "key_metrics": {
+    "Market Cap": "₹ 18,03,481 Cr.",
+    "Current Price": "₹ 1,333",
+    "High / Low": "₹ 1,612 / 1,253",
+    "Stock P/E": "23.2",
+    "Book Value": "₹ 668",
+    "Dividend Yield": "0.45 %",
+    "ROCE": "10.3 %",
+    "ROE": "8.91 %",
+    "Face Value": "₹ 10.0"
+  }
+}
+```
+
+**404** `{ "error": "Consolidated static JSON not found for 'FOO'" }`
+
+---
+
+### `GET /api/screener`
+
+Paginated, sortable, industry-filterable list over `stock_metrics` (a nightly-computed table — see
+`/api/metrics` below) joined to `company_stock` and `company_sectors`. Backs the peer-comparison
+and screener-style browsing use cases.
+
+| Query param | Default | Max | Notes |
+|---|---|---|---|
+| `page` | 1 | — | |
+| `limit` | 25 | 100 | |
+| `industry` | *(none — all)* | — | An NSE industry-classification code, e.g. `IN0201`. Nested codes like `IN02/IN0201` are accepted; only the last segment is used. |
+| `sort_by` | `mkt_cap` | — | One of `cmp`, `pe`, `mkt_cap`, `div_yld`, `np_qtr`, `profit_var`, `sales_qtr`, `sales_var`, `roce`. An unrecognized value silently falls back to `mkt_cap`. |
+| `order` | `desc` | — | `asc` or `desc`. |
+
+**Example**
+```
+GET /api/screener?industry=IN0201&sort_by=pe&order=asc&limit=10
+```
+
+**Response**
+```json
+{
+  "data": [
+    {
+      "FinInstrmId": "500325", "TckrSymb": "RELIANCE", "FinInstrmNm": "RELIANCE INDUSTRIES LTD.",
+      "sector_name": "...", "industry_name": "...", "leaf_name": "...",
+      "cmp": "1333.00", "pe": "23.2", "mkt_cap": "1803481.00", "div_yld": "0.45",
+      "np_qtr": "...", "profit_var": "...", "sales_qtr": "...", "sales_var": "...", "roce": "10.3"
+    }
+  ],
+  "pagination": { "total": 1, "page": 1, "limit": 10, "totalPages": 1 }
+}
+```
+
+Rows with no `stock_metrics` entry are simply absent — there is no error for an empty result set,
+only an empty `data` array.
+
+---
+
+### `GET /api/technical/:symbol`
+
+Precomputed technical-analysis snapshot (moving averages, RSI, support/resistance, etc.) for one
+instrument, from a nightly worker's `technical_analysis` table. `:symbol` matches the same
+ticker-or-scrip-code rule as `/api/quote`.
+
+**Example**
+```
+GET /api/technical/500325
+```
+
+**Response**
+```json
+{
+  "data": { "...": "worker-computed indicator payload, shape owned by the sodhaniScrap technical-analysis worker, not this route" },
+  "updated_at": "2026-08-10T02:15:00.000Z"
+}
+```
+
+**404** if the worker hasn't computed this instrument yet:
+```json
+{ "error": "Technical analysis not found for symbol 'FOO'." }
+```
+
+---
+
+### `GET /api/metrics/:symbol`
+
+Precomputed valuation/profitability metrics (the same `stock_metrics` table `/api/screener` reads)
+for one instrument, reshaped into display-ready labeled keys. `:symbol` matches the same
+ticker-or-scrip-code rule as `/api/quote`.
+
+**Example**
+```
+GET /api/metrics/500325
+```
+
+**Response**
+```json
+{
+  "CMP": 1333.0,
+  "P/E": 23.2,
+  "Mkt Cap": 1803481.0,
+  "Div Yld": 0.45,
+  "NP Qtr": 0,
+  "Profit Var": 0,
+  "Sales Qtr": 0,
+  "Sales Var": 0,
+  "ROCE": 10.3,
+  "updated_at": "2026-08-10T02:15:00.000Z"
+}
+```
+
+Every field is parsed with `parseFloat` server-side — a missing/non-numeric source value comes
+back as `NaN` (which JSON-serializes to `null`), not an error.
+
+**404** if this instrument has no `stock_metrics` row yet:
+```json
+{ "error": "Metrics not found for symbol 'FOO'. They may not have been calculated yet." }
 ```
 
 ---
@@ -623,6 +832,224 @@ doesn't match any known index.
 
 ---
 
+## Watchlist and Playlists
+
+Per-user stock tracking, backed by three tables owned by this API (`db/migrations/0004_watchlist_playlists.sql`): `watchlist_items` (a user's tracked stocks), `watchlist_playlists` (named, orderable groups), and `watchlist_playlist_items` (the many-to-many link — a stock can be in multiple playlists). The "All" view is virtual: it's just every `watchlist_items` row for the user, not a stored playlist.
+
+All `/api/watchlist/*` routes require `Authorization: Bearer <consumer jwt>` (via `requireAuth`). **Note on error shape:** auth failures (missing/invalid/revoked token) come back as `{ "detail": "..." }`, matching `/api/auth/*`; but all *other* errors from these routes use the market-route shape `{ "error": "..." }`.
+
+Symbols are matched case-insensitively against `company_stock`'s ticker (`TckrSymb`) and are normalized to uppercase on write. Adding a symbol that isn't in the tracked watchlist (`company_stock`) returns `404` — the same scope rule as `/api/quote` (see the scope note above). Prices are joined server-side from `historical_prices` using the same latest-trading-day snapshot as `/api/quote`, so `price`, `change`, and `change_percent` are `null` until the instrument has backfilled price rows.
+
+---
+
+### `GET /api/watchlist`
+
+All of the authenticated user's watchlist items with server-side joined live prices, newest first.
+
+**Response** `200`
+```json
+{
+  "items": [
+    {
+      "id": "...",
+      "symbol": "RELIANCE",
+      "name": "RELIANCE INDUSTRIES LTD.",
+      "price": 2900.0,
+      "change": 45.0,
+      "change_percent": 1.58
+    }
+  ]
+}
+```
+
+---
+
+### `POST /api/watchlist`
+
+Add a stock to the watchlist. Idempotent.
+
+**Body**
+```json
+{ "symbol": "RELIANCE" }
+```
+
+**Response**
+- `201 { "symbol": "RELIANCE" }` — newly added
+- `200 { "symbol": "RELIANCE" }` — already present
+
+**Errors**
+- `400 { "error": "symbol is required" }`
+- `404 { "error": "No stock found for symbol 'FOO'" }`
+
+---
+
+### `DELETE /api/watchlist/:symbol`
+
+Remove a stock from the watchlist. Cascades it out of all playlists it belonged to.
+
+**Response** `204` (no body)
+
+**Errors**
+- `404 { "error": "'FOO' is not in the watchlist" }`
+
+---
+
+### `GET /api/watchlist/playlists`
+
+List the user's playlists with item counts, ordered by `position`.
+
+**Response** `200`
+```json
+{
+  "playlists": [
+    { "id": "...", "name": "Momentum", "position": 0, "created_at": "...", "updated_at": "...", "item_count": 3 }
+  ]
+}
+```
+
+---
+
+### `POST /api/watchlist/playlists`
+
+Create a playlist. Names are unique per user (case-insensitive).
+
+**Body**
+```json
+{ "name": "Momentum" }
+```
+
+**Response** `201`
+```json
+{ "playlist": { "id": "...", "name": "Momentum", "position": 0, "item_count": 0 } }
+```
+
+**Errors**
+- `400 { "error": "name is required" }`
+- `409 { "error": "A playlist named 'Momentum' already exists" }`
+
+---
+
+### `PATCH /api/watchlist/playlists/reorder`
+
+Set the display order of all the user's playlists. `order` must be the full set of the user's playlist ids, in the desired order.
+
+**Body**
+```json
+{ "order": ["<playlist-id-1>", "<playlist-id-2>"] }
+```
+
+**Response** `200`
+```json
+{ "playlists": ["<playlist-id-1>", "<playlist-id-2>"] }
+```
+
+**Errors**
+- `400 { "error": "order must be an array of playlist ids" }`
+- `404 { "error": "One or more playlists do not belong to the user" }`
+
+---
+
+### `PATCH /api/watchlist/playlists/:id`
+
+Rename a playlist.
+
+**Body**
+```json
+{ "name": "Swing Trades" }
+```
+
+**Response** `200`
+```json
+{ "playlist": { "id": "...", "name": "Swing Trades", "position": 0 } }
+```
+
+**Errors**
+- `400 { "error": "name is required" }`
+- `404 { "error": "Playlist not found" }`
+- `409 { "error": "A playlist named 'Swing Trades' already exists" }`
+
+---
+
+### `DELETE /api/watchlist/playlists/:id`
+
+Delete a playlist. Watchlist items are preserved (only the playlist grouping is removed).
+
+**Response** `204` (no body)
+
+**Errors**
+- `404 { "error": "Playlist not found" }`
+
+---
+
+### `GET /api/watchlist/playlists/:id/items`
+
+Items in a playlist with live prices, ordered by `position`.
+
+**Response** `200`
+```json
+{
+  "items": [
+    { "id": "...", "symbol": "RELIANCE", "name": "RELIANCE INDUSTRIES LTD.", "price": 2900.0, "change": 45.0, "change_percent": 1.58 }
+  ]
+}
+```
+
+**Errors**
+- `404 { "error": "Playlist not found" }`
+
+---
+
+### `POST /api/watchlist/playlists/:id/items`
+
+Add a stock to a playlist. Auto-adds it to the watchlist if not already present. Idempotent.
+
+**Body**
+```json
+{ "symbol": "RELIANCE" }
+```
+
+**Response** `200`
+```json
+{ "symbol": "RELIANCE", "playlist_id": "..." }
+```
+
+**Errors**
+- `400 { "error": "symbol is required" }`
+- `404 { "error": "Playlist not found" }` / `{ "error": "No stock found for symbol 'FOO'" }`
+
+---
+
+### `DELETE /api/watchlist/playlists/:id/items/:symbol`
+
+Remove a stock from a playlist only — the stock remains in the watchlist.
+
+**Response** `204` (no body)
+
+**Errors**
+- `404 { "error": "Playlist not found" }` / `{ "error": "'FOO' is not in this playlist" }`
+
+---
+
+### `PATCH /api/watchlist/playlists/:id/items/reorder`
+
+Set the order of items within a playlist. `order` must be the full set of symbols currently in the playlist, in the desired order.
+
+**Body**
+```json
+{ "order": ["RELIANCE", "TCS"] }
+```
+
+**Response** `200`
+```json
+{ "symbols": ["RELIANCE", "TCS"] }
+```
+
+**Errors**
+- `400 { "error": "order must be an array of symbols" }`
+- `404 { "error": "Playlist not found" }` / `{ "error": "One or more symbols are not in this playlist" }`
+
+---
+
 ## Authentication
 
 Endpoints under `/api/auth/*` back the phone-OTP + Google sign-in flow used by `sodhani-web`. They read and write a `users` table (see `db/migrations/0001_create_users.sql`) in the same Postgres database as the market-data tables.
@@ -729,6 +1156,44 @@ Returns the authenticated user. Requires `Authorization: Bearer <jwt>`.
 
 **Errors**
 - `401` `{ "detail": "Missing or malformed Authorization header" }` / `{ "detail": "Invalid or expired token" }` / `{ "detail": "Token has been revoked" }`
+
+---
+
+### `POST /api/auth/send-delete-otp`
+
+Kicks off the account-deletion flow for the authenticated user. Requires `Authorization: Bearer <jwt>`. The route itself does **not** send an OTP — it just returns the user's phone number (or a `skipped` flag), and the frontend SDK triggers the actual OTP send through its MSG91 widget flow.
+
+**Response** `200`
+```json
+{ "ok": true, "skipped": false, "phone_number": "+919999999999" }
+```
+
+If the user has no phone number on file (e.g. a Google-only account), OTP verification is skipped:
+```json
+{ "ok": true, "skipped": true }
+```
+
+---
+
+### `POST /api/auth/delete-account`
+
+Deletes the authenticated user's account. Requires `Authorization: Bearer <jwt>`.
+
+**Body**
+```json
+{ "access_token": "<msg91 widget access token>" }
+```
+
+`access_token` is **required only if the user has a phone number on file** (Google-only accounts with no phone number are deleted without an OTP step). When present, it's verified server-side against MSG91; the account is deleted only if verification succeeds. Deletion runs in a single transaction that removes the user's `purchased_calls`, `payments`, and `users` rows.
+
+**Response** `200`
+```json
+{ "ok": true }
+```
+
+**Errors**
+- `400` `{ "detail": "access_token is required" }`
+- `401` `{ "detail": "OTP verification failed" }`
 
 ---
 
@@ -1107,12 +1572,13 @@ Comments on a purchased call, oldest first.
 - Endpoints that look up a single instrument (`/api/quote`, `/api/history`) return `404` with a descriptive message when nothing matches.
 - `/api/auth/*` and `/api/ra/*` follow the same status-code conventions but shape errors as `{ "detail": "..." }` — see [Authentication](#authentication) and [Research Analyst Dashboard and Paid Calls](#research-analyst-dashboard-and-paid-calls).
 - `/api/calls/*`, `/api/payments/*`, and `/api/me/*` shape errors as `{ "error": "..." }`, matching the market-route convention.
+- `/api/watchlist/*` uses `{ "detail": "..." }` for auth failures (from `requireAuth`) and `{ "error": "..." }` for everything else — see [Watchlist and Playlists](#watchlist-and-playlists).
 
 ## Security notes
 
 - All queries are parameterized — no raw string interpolation into SQL.
-- Market-data routes (`/api/*`, excluding `/api/auth/*`) only ever run `SELECT` statements; they have no write path.
-- `/api/auth/*` writes only to `users`; `/api/ra/*` writes only to `research_analysts`, `research_calls`, and `call_comments`; `/api/payments/*` and the webhook write only to `payments` and `purchased_calls` (via `completePurchase` in `src/services/purchaseService.ts`) — all via parameterized queries, each scoped to its own table(s).
+- Market-data routes (`/api/*`, excluding `/api/auth/*` and `/api/watchlist/*`) only ever run `SELECT` statements; they have no write path.
+- `/api/auth/*` writes only to `users`; `/api/ra/*` writes only to `research_analysts`, `research_calls`, and `call_comments`; `/api/payments/*` and the webhook write only to `payments` and `purchased_calls` (via `completePurchase` in `src/services/purchaseService.ts`); `/api/watchlist/*` writes only to `watchlist_items`, `watchlist_playlists`, and `watchlist_playlist_items` — all via parameterized queries, each scoped to its own table(s) and filtered by the authenticated user's id (the playlist reorder/rename/delete and item routes all verify ownership server-side).
 - Session tokens are JWTs signed with `JWT_SECRET` (consumer users) or `RA_JWT_SECRET` (Research Analysts) — two independent secrets, so a token issued for one identity can never authenticate as the other. Treat both as secrets and rotate them (which invalidates all sessions for that identity) if ever exposed.
 - Razorpay payment completion (`completePurchase`) only runs after a checkout signature (`/api/payments/verify`) or webhook signature (`/api/payments/webhook`, verified against `RAZORPAY_WEBHOOK_SECRET`) has been cryptographically verified, and is idempotent on `razorpay_order_id` — safe to run twice for the same order (e.g. once from the client, once from the webhook).
 - MSG91 access-token verification proves the token is valid to MSG91, not which phone number it belongs to — `phone_number` is otherwise trusted from the request body since only `sodhani-web`'s own frontend constructs these requests. This is an accepted trust boundary given the current deployment model, not an oversight.

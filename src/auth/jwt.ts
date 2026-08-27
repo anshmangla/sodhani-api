@@ -21,3 +21,16 @@ export function signAuthToken(userId: string, tokenVersion: number): string {
 export function verifyAuthToken(token: string): AuthTokenPayload {
   return jwt.verify(token, getSecret(), { algorithms: ['HS256'] }) as AuthTokenPayload;
 }
+
+// Short-lived, single-purpose token issued after a phone's OTP is verified but
+// before the (new) user's profile is complete. Carries only the verified phone
+// number so `complete-signup` can't be called with an unverified number.
+export type SignupTokenPayload = { phone: string };
+
+export function signSignupToken(phone: string): string {
+  return jwt.sign({ phone }, getSecret(), { algorithm: 'HS256', expiresIn: '10m' });
+}
+
+export function verifySignupToken(token: string): SignupTokenPayload {
+  return jwt.verify(token, getSecret(), { algorithms: ['HS256'] }) as SignupTokenPayload;
+}
