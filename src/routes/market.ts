@@ -335,6 +335,21 @@ router.get('/announcements/:symbol', asyncHandler(async (req, res) => {
   res.json({ count: result.rows.length, announcements: result.rows });
 }));
 
+// GET /api/research-reports?limit=20
+router.get('/research-reports', asyncHandler(async (req, res) => {
+  const limit = clampLimit(req.query.limit, 20, 100);
+
+  const result = await pool.query(
+    `SELECT "id", "company", "fin_instrm_id", "tckr_symb", "action", "target_price", "broker", "report_date", "report_url"
+     FROM research_reports
+     ORDER BY "report_date" DESC, "id" DESC
+     LIMIT $1`,
+    [limit]
+  );
+
+  res.json({ count: result.rows.length, reports: result.rows });
+}));
+
 // GET /api/screener?page=1&limit=25&industry=Pharmaceuticals&sort_by=mkt_cap&order=desc
 router.get('/screener', asyncHandler(async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
