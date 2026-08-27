@@ -1159,6 +1159,44 @@ Returns the authenticated user. Requires `Authorization: Bearer <jwt>`.
 
 ---
 
+### `POST /api/auth/send-delete-otp`
+
+Kicks off the account-deletion flow for the authenticated user. Requires `Authorization: Bearer <jwt>`. The route itself does **not** send an OTP — it just returns the user's phone number (or a `skipped` flag), and the frontend SDK triggers the actual OTP send through its MSG91 widget flow.
+
+**Response** `200`
+```json
+{ "ok": true, "skipped": false, "phone_number": "+919999999999" }
+```
+
+If the user has no phone number on file (e.g. a Google-only account), OTP verification is skipped:
+```json
+{ "ok": true, "skipped": true }
+```
+
+---
+
+### `POST /api/auth/delete-account`
+
+Deletes the authenticated user's account. Requires `Authorization: Bearer <jwt>`.
+
+**Body**
+```json
+{ "access_token": "<msg91 widget access token>" }
+```
+
+`access_token` is **required only if the user has a phone number on file** (Google-only accounts with no phone number are deleted without an OTP step). When present, it's verified server-side against MSG91; the account is deleted only if verification succeeds. Deletion runs in a single transaction that removes the user's `purchased_calls`, `payments`, and `users` rows.
+
+**Response** `200`
+```json
+{ "ok": true }
+```
+
+**Errors**
+- `400` `{ "detail": "access_token is required" }`
+- `401` `{ "detail": "OTP verification failed" }`
+
+---
+
 ### `POST /api/auth/logout`
 
 Revokes all outstanding session tokens for the authenticated user by bumping `token_version`. Requires `Authorization: Bearer <jwt>`.
