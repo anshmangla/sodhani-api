@@ -606,7 +606,24 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
   }
 
   const outputDir = process.env.STATIC_JSON_DIR || '/opt/sodhaniScrap/output';
-  const data = await searchStaticStock(outputDir, query);
+  let data = await searchStaticStock(outputDir, query);
+
+  // Ultimate fallback: if not found by name or static mapping, check the live database
+  // to map an incoming TckrSymb (like INTLCOMBQ) back to its FinInstrmId (like 505737)
+  if (!data) {
+    try {
+      const dbRes = await pool.query(
+        `SELECT "FinInstrmId" FROM company_stock WHERE UPPER("TckrSymb") = UPPER($1) OR "FinInstrmId"::text = $1 LIMIT 1`,
+        [query]
+      );
+      if (dbRes.rows.length > 0) {
+        const finId = dbRes.rows[0].FinInstrmId.toString();
+        data = await searchStaticStock(outputDir, finId);
+      }
+    } catch (e) {
+      console.error("Database fallback failed:", e);
+    }
+  }
 
   if (data) {
     res.json(data);
@@ -624,7 +641,24 @@ router.get('/static-stock-consolidated', asyncHandler(async (req, res) => {
   }
 
   const consolidatedDir = process.env.CONSOLIDATED_JSON_DIR || '/opt/sodhaniScrap/output_consolidated';
-  const data = await searchStaticStock(consolidatedDir, query);
+  let data = await searchStaticStock(consolidatedDir, query);
+
+  // Ultimate fallback: if not found by name or static mapping, check the live database
+  // to map an incoming TckrSymb (like INTLCOMBQ) back to its FinInstrmId (like 505737)
+  if (!data) {
+    try {
+      const dbRes = await pool.query(
+        `SELECT "FinInstrmId" FROM company_stock WHERE UPPER("TckrSymb") = UPPER($1) OR "FinInstrmId"::text = $1 LIMIT 1`,
+        [query]
+      );
+      if (dbRes.rows.length > 0) {
+        const finId = dbRes.rows[0].FinInstrmId.toString();
+        data = await searchStaticStock(consolidatedDir, finId);
+      }
+    } catch (e) {
+      console.error("Database fallback failed:", e);
+    }
+  }
 
   if (data) {
     res.json(data);
