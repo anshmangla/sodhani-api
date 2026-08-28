@@ -607,32 +607,37 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
 
   const outputDir = process.env.STATIC_JSON_DIR || '/opt/sodhaniScrap/output';
   let data = await searchStaticStock(outputDir, query);
-
-  // Ultimate fallback: if not found by name or static mapping, check the live database
-  // to map an incoming TckrSymb (like INTLCOMBQ) back to its FinInstrmId (like 505737)
+  
+  let fallbackError = null;
+  let fallbackDebug = null;
   if (!data) {
     try {
       const dbRes = await pool.query(
         `SELECT "FinInstrmId" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
         [query]
       );
+      fallbackDebug = { rowsFound: dbRes.rows.length };
       if (dbRes.rows.length > 0) {
         const row = dbRes.rows[0];
         const rawId = row.FinInstrmId ?? row.fininstrmid ?? Object.values(row)[0];
+        fallbackDebug.rawId = rawId;
         if (rawId) {
           const finId = rawId.toString();
+          fallbackDebug.finId = finId;
           data = await searchStaticStock(outputDir, finId);
+          fallbackDebug.dataFound = !!data;
         }
       }
     } catch (e) {
       console.error("Database fallback failed:", e);
+      fallbackError = String(e);
     }
   }
 
   if (data) {
     res.json(data);
   } else {
-    res.status(404).json({ error: `Static JSON not found for '${query}'` });
+    res.status(404).json({ error: `Static JSON not found for '${query}'`, fallbackError, fallbackDebug });
   }
 }));
 
