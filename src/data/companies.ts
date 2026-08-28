@@ -1,33 +1,25 @@
-import * as fs from 'fs/promises';
-import path from 'path';
+import { pool } from '../db/pool';
 
 export type Company = { code: string; name: string };
 
 let cachedCompanies: Company[] | null = null;
+let lastCacheTime = 0;
 
 export async function getCompanies(): Promise<Company[]> {
-  if (cachedCompanies) {
+  const now = Date.now();
+  // Cache for 10 minutes to avoid hitting the DB on every keystroke
+  if (cachedCompanies && now - lastCacheTime < 10 * 60 * 1000) {
     return cachedCompanies;
   }
 
-  const csvPath = path.resolve(__dirname, '../../companies.csv');
-  const data = await fs.readFile(csvPath, 'utf-8');
-  const lines = data.split('\n');
+  const res = await pool.query(`
+    SELECT "TckrSymb" as code, "FinInstrmNm" as name 
+    FROM company_stock
+    WHERE "TckrSymb" IS NOT NULL AND "FinInstrmNm" IS NOT NULL
+  `);
 
-  const companies: Company[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-
-    const row = line.split(',');
-    const code = (row[1] ?? '').trim();
-    const name = (row[2] ?? '').trim();
-    if (!code || !name) continue;
-
-    companies.push({ code, name });
-  }
-
-  cachedCompanies = companies;
+  cachedCompanies = res.rows;
+  lastCacheTime = now;
   return cachedCompanies;
 }
 
