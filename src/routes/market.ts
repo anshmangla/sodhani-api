@@ -613,12 +613,16 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
   if (!data) {
     try {
       const dbRes = await pool.query(
-        `SELECT "FinInstrmId" FROM company_stock WHERE UPPER("TckrSymb") = UPPER($1) OR "FinInstrmId"::text = $1 LIMIT 1`,
+        `SELECT "FinInstrmId" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
         [query]
       );
       if (dbRes.rows.length > 0) {
-        const finId = dbRes.rows[0].FinInstrmId.toString();
-        data = await searchStaticStock(outputDir, finId);
+        const row = dbRes.rows[0];
+        const rawId = row.FinInstrmId ?? row.fininstrmid ?? Object.values(row)[0];
+        if (rawId) {
+          const finId = rawId.toString();
+          data = await searchStaticStock(outputDir, finId);
+        }
       }
     } catch (e) {
       console.error("Database fallback failed:", e);
@@ -648,12 +652,16 @@ router.get('/static-stock-consolidated', asyncHandler(async (req, res) => {
   if (!data) {
     try {
       const dbRes = await pool.query(
-        `SELECT "FinInstrmId" FROM company_stock WHERE UPPER("TckrSymb") = UPPER($1) OR "FinInstrmId"::text = $1 LIMIT 1`,
+        `SELECT "FinInstrmId" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
         [query]
       );
       if (dbRes.rows.length > 0) {
-        const finId = dbRes.rows[0].FinInstrmId.toString();
-        data = await searchStaticStock(consolidatedDir, finId);
+        const row = dbRes.rows[0];
+        const rawId = row.FinInstrmId ?? row.fininstrmid ?? Object.values(row)[0];
+        if (rawId) {
+          const finId = rawId.toString();
+          data = await searchStaticStock(consolidatedDir, finId);
+        }
       }
     } catch (e) {
       console.error("Database fallback failed:", e);

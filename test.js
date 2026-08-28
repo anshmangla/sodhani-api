@@ -1,0 +1,1 @@
+const { Client } = require('pg'); const client = new Client('postgres://sodhani:sodhani_local_pass@localhost:5432/sodhaniscrap'); client.connect().then(() => client.query('SELECT "FinInstrmId" FROM company_stock LIMIT 1').then(r => { console.log(r.rows); client.end(); })).catch(console.error);
