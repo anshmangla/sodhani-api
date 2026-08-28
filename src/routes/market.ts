@@ -609,7 +609,7 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
   let data = await searchStaticStock(outputDir, query);
   
   let fallbackError = null;
-  let fallbackDebug = null;
+  let fallbackDebug: any = null;
   if (!data) {
     try {
       const dbRes = await pool.query(
