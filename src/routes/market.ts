@@ -552,16 +552,36 @@ const searchStaticStock = async (dir: string, query: string) => {
   }
   if (!data) data = await findFileCaseInsensitive(dir, query);
 
-  // 2. If not found, check exchange_code_mappings.json for BSE to NSE mapping
+  // 2. If not found, intelligently check mappings (both NSE->BSE and BSE->NSE)
   if (!data) {
     try {
       const mappingsPath = path.resolve(__dirname, '../../exchange_code_mappings.json');
       const mappingsData = await fs.readFile(mappingsPath, 'utf-8');
       const mappingsJson = JSON.parse(mappingsData);
-      const bseToNse = mappingsJson.bse_to_nse || {};
+      const nseToBse = mappingsJson.nse_to_bse || {};
       
-      const nseSymbol = bseToNse[query];
-      if (nseSymbol) {
+      // Compute BSE -> NSE mapping
+      const bseToNse: Record<string, string> = {};
+      for (const [nse, bse] of Object.entries(nseToBse)) {
+        if (typeof bse === 'string') bseToNse[bse] = nse;
+      }
+      
+      const upperQuery = query.toUpperCase();
+      const bseCode = nseToBse[upperQuery];
+      const nseSymbol = bseToNse[upperQuery];
+
+      // Try BSE code if it was an NSE ticker
+      if (bseCode) {
+        const bseCandidates = [bseCode, `${bseCode}.json`];
+        for (const filename of bseCandidates) {
+          if (data) break;
+          data = await tryReadFile(dir, filename);
+        }
+        if (!data) data = await findFileCaseInsensitive(dir, bseCode);
+      }
+
+      // Try NSE ticker if it was a BSE code
+      if (!data && nseSymbol) {
         const nseCandidates = [nseSymbol, `${nseSymbol}.json`];
         for (const filename of nseCandidates) {
           if (data) break;
