@@ -15,7 +15,7 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
 const VALID_RECOMMENDATIONS = ['Buy', 'Hold', 'Sell'];
 
 // GET /api/ra/companies?search=
-router.get('/companies', requireRaAuth, asyncHandler(async (req, res) => {
+router.get('/companies', asyncHandler(async (req, res) => {
   const search = typeof req.query.search === 'string' ? req.query.search : '';
   const companies = await searchCompanies(search, 20);
   res.status(200).json({ companies });

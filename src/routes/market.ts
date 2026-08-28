@@ -892,4 +892,64 @@ router.get('/indices/:code/constituents', asyncHandler(async (req, res) => {
   });
 }));
 
+// GET /api/search-index
+// Returns a unified search index for the frontend (Companies and Industries), ranked dynamically by market cap.
+router.get('/search-index', asyncHandler(async (req, res) => {
+  // Fetch companies
+  const companyQuery = `
+    SELECT 
+      c.fin_instrm_id as "code", 
+      c.company_name as "label", 
+      c.leaf_name as "leaf", 
+      s.mkt_cap as "mkt_cap"
+    FROM company_sectors c
+    LEFT JOIN stock_metrics s ON s.symbol = c.fin_instrm_id
+    WHERE c.company_name IS NOT NULL
+  `;
+  const companyRows = await pool.query(companyQuery);
+
+  // Fetch industries
+  const industryQuery = `
+    SELECT 
+      industry_code as "code", 
+      industry_name as "name", 
+      sector_name as "sector",
+      COUNT(*) as "count"
+    FROM company_sectors
+    WHERE industry_code IS NOT NULL AND industry_name IS NOT NULL
+    GROUP BY industry_code, industry_name, sector_name
+  `;
+  const industryRows = await pool.query(industryQuery);
+
+  // Map and sort companies
+  const companies = companyRows.rows.map(r => ({
+    kind: "Company",
+    label: r.label,
+    meta: `${r.code} • ${r.leaf || 'Unknown'}`,
+    href: `/company/${r.code}`,
+    code: r.code,
+    mkt_cap: parseFloat(r.mkt_cap || 0)
+  })).sort((a, b) => b.mkt_cap - a.mkt_cap).map((c, i) => ({
+    kind: c.kind,
+    label: c.label,
+    meta: c.meta,
+    href: c.href,
+    code: c.code,
+    rank: i
+  }));
+
+  // Map industries
+  const industries = industryRows.rows.map(r => ({
+    kind: "Industry",
+    label: r.name,
+    meta: `${r.sector} / ${r.name}`,
+    href: `/market/${r.code}`,
+    code: r.code,
+    count: parseInt(r.count, 10),
+    rank: -parseInt(r.count, 10)
+  }));
+
+  res.json([...companies, ...industries]);
+}));
+
 export default router;
