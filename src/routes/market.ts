@@ -447,35 +447,36 @@ router.get('/screener', asyncHandler(async (req, res) => {
     const parts = industry.split('/');
     const code = parts[parts.length - 1];
 
-    whereClause = 'WHERE leaf_code LIKE $1';
+    whereClause = 'WHERE ci.leaf_code LIKE $1';
     params.push(`${code}%`);
   }
 
   // Both stock_metrics and company_sectors can carry more than one row for
   // the same company_stock row (a ticker-keyed row and a numeric-BSE-code-
   // keyed row, independently stale) - a plain join fans that out into
-  // duplicate companies in the result. Each LATERAL picks one deterministic
-  // row per company_stock row instead, same fix as GET /api/company/:symbol/peers.
+  // duplicate companies in the result. DISTINCT ON picks one deterministic
+  // row per company_stock row instead.
+  //
+  // No UPPER() here: TckrSymb/fin_instrm_id/symbol are already 100% uppercase
+  // in this data (verified directly against production), and UPPER() on
+  // either side of the join defeats Postgres's ability to use the primary
+  // key indexes on company_sectors.fin_instrm_id / stock_metrics.symbol -
+  // it falls back to a nested-loop scan comparing every company_stock row
+  // against every row of the other table (measured: ~19s for one industry
+  // filter, vs ~70ms with plain equality). The WHERE filter lives inside the
+  // CTE (not wrapped around it) so it narrows company_sectors before the
+  // joins run, rather than after.
   const baseCte = `
     WITH base AS (
-      SELECT
+      SELECT DISTINCT ON (cs."FinInstrmId")
         cs."FinInstrmId", cs."TckrSymb", cs."FinInstrmNm",
         ci.sector_name, ci.industry_name, ci.leaf_name, ci.leaf_code,
         sm.cmp, sm.pe, sm.mkt_cap, sm.div_yld, sm.np_qtr, sm.profit_var, sm.sales_qtr, sm.sales_var, sm.roce
       FROM company_stock cs
-      JOIN LATERAL (
-        SELECT s.cmp, s.pe, s.mkt_cap, s.div_yld, s.np_qtr, s.profit_var, s.sales_qtr, s.sales_var, s.roce
-        FROM stock_metrics s
-        WHERE s.symbol = cs."FinInstrmId"::text OR UPPER(s.symbol) = UPPER(cs."TckrSymb")
-        ORDER BY s.mkt_cap DESC NULLS LAST
-        LIMIT 1
-      ) sm ON true
-      LEFT JOIN LATERAL (
-        SELECT c.sector_name, c.industry_name, c.leaf_name, c.leaf_code
-        FROM company_sectors c
-        WHERE c.fin_instrm_id = cs."FinInstrmId"::text OR UPPER(c.fin_instrm_id) = UPPER(cs."TckrSymb")
-        LIMIT 1
-      ) ci ON true
+      JOIN stock_metrics sm ON sm.symbol = cs."FinInstrmId"::text OR sm.symbol = cs."TckrSymb"
+      LEFT JOIN company_sectors ci ON ci.fin_instrm_id = cs."FinInstrmId"::text OR ci.fin_instrm_id = cs."TckrSymb"
+      ${whereClause}
+      ORDER BY cs."FinInstrmId", sm.mkt_cap DESC NULLS LAST
     )
   `;
 
@@ -483,7 +484,6 @@ router.get('/screener', asyncHandler(async (req, res) => {
   const countQuery = `
     ${baseCte}
     SELECT COUNT(*) FROM base
-    ${whereClause}
   `;
   const countResult = await pool.query(countQuery, params);
   const totalCount = parseInt(countResult.rows[0].count, 10);
@@ -497,7 +497,6 @@ router.get('/screener', asyncHandler(async (req, res) => {
       sector_name, industry_name, leaf_name,
       cmp, pe, mkt_cap, div_yld, np_qtr, profit_var, sales_qtr, sales_var, roce
     FROM base
-    ${whereClause}
     ORDER BY ${sortColumn} ${sortOrder} NULLS LAST
     LIMIT $${params.length + 1} OFFSET $${params.length + 2}
   `;
