@@ -985,22 +985,28 @@ router.get('/indices/:code/constituents', asyncHandler(async (req, res) => {
 // Returns a unified search index for the frontend (Companies and Industries), ranked dynamically by market cap.
 router.get('/search-index', asyncHandler(async (req, res) => {
   // Fetch companies
+  //
+  // No UPPER() here: TckrSymb/fin_instrm_id/symbol are already 100%
+  // uppercase in this data (verified directly against production). UPPER()
+  // on either side of a join defeats Postgres's ability to use the primary
+  // key indexes on company_stock/stock_metrics, forcing a nested-loop scan
+  // per company_sectors row against every company_stock/stock_metrics row -
+  // measured as catastrophically slow (multi-second) for the /api/screener
+  // and /api/company/:symbol/peers endpoints that had the same pattern.
+  // DISTINCT ON collapses the still-possible stock_metrics fan-out (a
+  // ticker-keyed and a numeric-BSE-code-keyed row for the same company)
+  // back to one row per company_sectors entry.
   const companyQuery = `
-    SELECT 
-      c.fin_instrm_id as "code", 
-      c.company_name as "label", 
-      c.leaf_name as "leaf", 
-      s.mkt_cap as "mkt_cap"
+    SELECT DISTINCT ON (c.fin_instrm_id)
+      c.fin_instrm_id as "code",
+      c.company_name as "label",
+      c.leaf_name as "leaf",
+      sm.mkt_cap as "mkt_cap"
     FROM company_sectors c
-    LEFT JOIN LATERAL (
-      SELECT s.mkt_cap
-      FROM company_stock cs
-      JOIN stock_metrics s ON s.symbol = cs."FinInstrmId"::text OR UPPER(s.symbol) = UPPER(cs."TckrSymb")
-      WHERE cs."FinInstrmId"::text = c.fin_instrm_id OR UPPER(cs."TckrSymb") = UPPER(c.fin_instrm_id)
-      ORDER BY s.mkt_cap DESC NULLS LAST
-      LIMIT 1
-    ) s ON true
+    LEFT JOIN company_stock cs ON cs."FinInstrmId"::text = c.fin_instrm_id OR cs."TckrSymb" = c.fin_instrm_id
+    LEFT JOIN stock_metrics sm ON sm.symbol = cs."FinInstrmId"::text OR sm.symbol = cs."TckrSymb"
     WHERE c.company_name IS NOT NULL
+    ORDER BY c.fin_instrm_id, sm.mkt_cap DESC NULLS LAST
   `;
   const companyRows = await pool.query(companyQuery);
 

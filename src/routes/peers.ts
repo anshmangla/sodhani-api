@@ -32,23 +32,28 @@ const COLUMN_TO_LEVEL: Record<LevelColumn, PeerLevel> = {
 async function fetchLevelRows(column: LevelColumn, code: string): Promise<PeerLevelRow[]> {
   // stock_metrics can carry two rows for the same company - one keyed by
   // ticker, one by numeric BSE code (with independently stale cmp/pe/mkt_cap
-  // values) - so a plain join fans out into duplicate peer rows. The LATERAL
+  // values) - so a plain join fans out into duplicate peer rows. DISTINCT ON
   // picks a single, deterministic row per company_stock match instead.
+  //
+  // No UPPER() here: TckrSymb/fin_instrm_id/symbol are already 100%
+  // uppercase in this data (verified directly against production).
+  // UPPER() on either side defeats Postgres's ability to use the primary
+  // key indexes on company_sectors.fin_instrm_id / stock_metrics.symbol,
+  // forcing a nested-loop scan of every company_stock row against every row
+  // of the other table - measured ~6.5s for one industry lookup with
+  // UPPER(), ~10ms without it.
   const result = await pool.query(
-    `SELECT COALESCE(cs."TckrSymb", cs."FinInstrmId"::text) AS symbol,
+    `SELECT DISTINCT ON (cs."FinInstrmId")
+            COALESCE(cs."TckrSymb", cs."FinInstrmId"::text) AS symbol,
             cs."FinInstrmNm" AS name,
             sm.cmp, sm.pe, sm.mkt_cap, sm.profit_var
      FROM company_sectors ci
      JOIN company_stock cs ON
-        cs."FinInstrmId"::text = ci.fin_instrm_id OR UPPER(cs."TckrSymb") = UPPER(ci.fin_instrm_id)
-     LEFT JOIN LATERAL (
-       SELECT s.cmp, s.pe, s.mkt_cap, s.profit_var
-       FROM stock_metrics s
-       WHERE s.symbol = cs."FinInstrmId"::text OR UPPER(s.symbol) = UPPER(cs."TckrSymb")
-       ORDER BY s.mkt_cap DESC NULLS LAST
-       LIMIT 1
-     ) sm ON true
-     WHERE ci.${column} = $1`,
+        cs."FinInstrmId"::text = ci.fin_instrm_id OR cs."TckrSymb" = ci.fin_instrm_id
+     LEFT JOIN stock_metrics sm ON
+        sm.symbol = cs."FinInstrmId"::text OR sm.symbol = cs."TckrSymb"
+     WHERE ci.${column} = $1
+     ORDER BY cs."FinInstrmId", sm.mkt_cap DESC NULLS LAST`,
     [code]
   );
   return result.rows;
@@ -81,7 +86,7 @@ router.get('/company/:symbol/peers', asyncHandler(async (req, res) => {
        FROM stock_metrics
      )
      SELECT rnk FROM ranked
-     WHERE symbol = $1 OR UPPER(symbol) = UPPER($2)
+     WHERE symbol = $1 OR symbol = $2
      LIMIT 1`,
     [stock.FinInstrmId, stock.TckrSymb]
   );
@@ -90,7 +95,7 @@ router.get('/company/:symbol/peers', asyncHandler(async (req, res) => {
   const classResult = await pool.query(
     `SELECT sector_code, sector_name, industry_code, industry_name, leaf_code, leaf_name
      FROM company_sectors
-     WHERE fin_instrm_id = $1 OR UPPER(fin_instrm_id) = UPPER($2)
+     WHERE fin_instrm_id = $1 OR fin_instrm_id = $2
      LIMIT 1`,
     [stock.FinInstrmId, stock.TckrSymb]
   );
