@@ -972,7 +972,14 @@ router.get('/search-index', asyncHandler(async (req, res) => {
       c.leaf_name as "leaf", 
       s.mkt_cap as "mkt_cap"
     FROM company_sectors c
-    LEFT JOIN stock_metrics s ON s.symbol = c.fin_instrm_id
+    LEFT JOIN LATERAL (
+      SELECT s.mkt_cap
+      FROM company_stock cs
+      JOIN stock_metrics s ON s.symbol = cs."FinInstrmId"::text OR UPPER(s.symbol) = UPPER(cs."TckrSymb")
+      WHERE cs."FinInstrmId"::text = c.fin_instrm_id OR UPPER(cs."TckrSymb") = UPPER(c.fin_instrm_id)
+      ORDER BY s.mkt_cap DESC NULLS LAST
+      LIMIT 1
+    ) s ON true
     WHERE c.company_name IS NOT NULL
   `;
   const companyRows = await pool.query(companyQuery);
