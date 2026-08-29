@@ -30,6 +30,10 @@ const COLUMN_TO_LEVEL: Record<LevelColumn, PeerLevel> = {
 };
 
 async function fetchLevelRows(column: LevelColumn, code: string): Promise<PeerLevelRow[]> {
+  // stock_metrics can carry two rows for the same company - one keyed by
+  // ticker, one by numeric BSE code (with independently stale cmp/pe/mkt_cap
+  // values) - so a plain join fans out into duplicate peer rows. The LATERAL
+  // picks a single, deterministic row per company_stock match instead.
   const result = await pool.query(
     `SELECT COALESCE(cs."TckrSymb", cs."FinInstrmId"::text) AS symbol,
             cs."FinInstrmNm" AS name,
@@ -37,8 +41,13 @@ async function fetchLevelRows(column: LevelColumn, code: string): Promise<PeerLe
      FROM company_sectors ci
      JOIN company_stock cs ON
         cs."FinInstrmId"::text = ci.fin_instrm_id OR UPPER(cs."TckrSymb") = UPPER(ci.fin_instrm_id)
-     JOIN stock_metrics sm ON
-        sm.symbol = cs."FinInstrmId"::text OR UPPER(sm.symbol) = UPPER(cs."TckrSymb")
+     LEFT JOIN LATERAL (
+       SELECT s.cmp, s.pe, s.mkt_cap, s.profit_var
+       FROM stock_metrics s
+       WHERE s.symbol = cs."FinInstrmId"::text OR UPPER(s.symbol) = UPPER(cs."TckrSymb")
+       ORDER BY s.mkt_cap DESC NULLS LAST
+       LIMIT 1
+     ) sm ON true
      WHERE ci.${column} = $1`,
     [code]
   );
