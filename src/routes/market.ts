@@ -455,9 +455,10 @@ router.get('/screener', asyncHandler(async (req, res) => {
   const countQuery = `
     SELECT COUNT(*) 
     FROM stock_metrics sm
-    JOIN company_stock cs ON 
+    JOIN company_stock cs ON
        (sm.symbol = cs."FinInstrmId"::text OR UPPER(sm.symbol) = UPPER(cs."TckrSymb"))
-    LEFT JOIN company_sectors ci ON cs."FinInstrmId"::text = ci.fin_instrm_id
+    LEFT JOIN company_sectors ci ON
+       cs."FinInstrmId"::text = ci.fin_instrm_id OR UPPER(cs."TckrSymb") = UPPER(ci.fin_instrm_id)
     ${whereClause}
   `;
   const countResult = await pool.query(countQuery, params);
@@ -471,9 +472,10 @@ router.get('/screener', asyncHandler(async (req, res) => {
       ci.sector_name, ci.industry_name, ci.leaf_name,
       sm.cmp, sm.pe, sm.mkt_cap, sm.div_yld, sm.np_qtr, sm.profit_var, sm.sales_qtr, sm.sales_var, sm.roce
     FROM stock_metrics sm
-    JOIN company_stock cs ON 
+    JOIN company_stock cs ON
        (sm.symbol = cs."FinInstrmId"::text OR UPPER(sm.symbol) = UPPER(cs."TckrSymb"))
-    LEFT JOIN company_sectors ci ON cs."FinInstrmId"::text = ci.fin_instrm_id
+    LEFT JOIN company_sectors ci ON
+       cs."FinInstrmId"::text = ci.fin_instrm_id OR UPPER(cs."TckrSymb") = UPPER(ci.fin_instrm_id)
     ${whereClause}
     ORDER BY ${sortColumn} ${sortOrder} NULLS LAST
     LIMIT $${params.length + 1} OFFSET $${params.length + 2}

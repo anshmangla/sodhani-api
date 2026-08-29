@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import marketRouter from './routes/market';
+import peersRouter from './routes/peers';
 import authRouter from './routes/auth';
 import raAuthRouter from './routes/raAuth';
 import raCallsRouter from './routes/raCalls';
@@ -25,6 +26,7 @@ app.get('/health', (_req, res) => {
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 app.use('/api', marketRouter);
+app.use('/api', peersRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/ra', raAuthRouter);
 app.use('/api/ra/onboarding', raOnboardingRouter);
