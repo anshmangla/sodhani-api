@@ -426,39 +426,63 @@ router.get('/screener', asyncHandler(async (req, res) => {
 
   // Map sort_by to actual columns to prevent SQL injection
   const sortMap: Record<string, string> = {
-    'cmp': 'sm.cmp',
-    'pe': 'sm.pe',
-    'mkt_cap': 'sm.mkt_cap',
-    'div_yld': 'sm.div_yld',
-    'np_qtr': 'sm.np_qtr',
-    'profit_var': 'sm.profit_var',
-    'sales_qtr': 'sm.sales_qtr',
-    'sales_var': 'sm.sales_var',
-    'roce': 'sm.roce',
+    'cmp': 'cmp',
+    'pe': 'pe',
+    'mkt_cap': 'mkt_cap',
+    'div_yld': 'div_yld',
+    'np_qtr': 'np_qtr',
+    'profit_var': 'profit_var',
+    'sales_qtr': 'sales_qtr',
+    'sales_var': 'sales_var',
+    'roce': 'roce',
   };
   const sortColumn = sortMap[sortByParam] || sortMap['mkt_cap'];
   const sortOrder = orderParam === 'asc' ? 'ASC' : 'DESC';
 
   let whereClause = '';
   let params: any[] = [];
-  
+
   if (industry) {
     // Handle nested codes like "IN02/IN0201" by taking the last part
     const parts = industry.split('/');
     const code = parts[parts.length - 1];
-    
-    whereClause = 'WHERE ci.leaf_code LIKE $1';
+
+    whereClause = 'WHERE leaf_code LIKE $1';
     params.push(`${code}%`);
   }
 
+  // Both stock_metrics and company_sectors can carry more than one row for
+  // the same company_stock row (a ticker-keyed row and a numeric-BSE-code-
+  // keyed row, independently stale) - a plain join fans that out into
+  // duplicate companies in the result. Each LATERAL picks one deterministic
+  // row per company_stock row instead, same fix as GET /api/company/:symbol/peers.
+  const baseCte = `
+    WITH base AS (
+      SELECT
+        cs."FinInstrmId", cs."TckrSymb", cs."FinInstrmNm",
+        ci.sector_name, ci.industry_name, ci.leaf_name, ci.leaf_code,
+        sm.cmp, sm.pe, sm.mkt_cap, sm.div_yld, sm.np_qtr, sm.profit_var, sm.sales_qtr, sm.sales_var, sm.roce
+      FROM company_stock cs
+      JOIN LATERAL (
+        SELECT s.cmp, s.pe, s.mkt_cap, s.div_yld, s.np_qtr, s.profit_var, s.sales_qtr, s.sales_var, s.roce
+        FROM stock_metrics s
+        WHERE s.symbol = cs."FinInstrmId"::text OR UPPER(s.symbol) = UPPER(cs."TckrSymb")
+        ORDER BY s.mkt_cap DESC NULLS LAST
+        LIMIT 1
+      ) sm ON true
+      LEFT JOIN LATERAL (
+        SELECT c.sector_name, c.industry_name, c.leaf_name, c.leaf_code
+        FROM company_sectors c
+        WHERE c.fin_instrm_id = cs."FinInstrmId"::text OR UPPER(c.fin_instrm_id) = UPPER(cs."TckrSymb")
+        LIMIT 1
+      ) ci ON true
+    )
+  `;
+
   // Get total count for pagination
   const countQuery = `
-    SELECT COUNT(*) 
-    FROM stock_metrics sm
-    JOIN company_stock cs ON
-       (sm.symbol = cs."FinInstrmId"::text OR UPPER(sm.symbol) = UPPER(cs."TckrSymb"))
-    LEFT JOIN company_sectors ci ON
-       cs."FinInstrmId"::text = ci.fin_instrm_id OR UPPER(cs."TckrSymb") = UPPER(ci.fin_instrm_id)
+    ${baseCte}
+    SELECT COUNT(*) FROM base
     ${whereClause}
   `;
   const countResult = await pool.query(countQuery, params);
@@ -467,15 +491,12 @@ router.get('/screener', asyncHandler(async (req, res) => {
   // Get paginated data
   const dataParams = [...params, limit, offset];
   const dataQuery = `
-    SELECT 
-      cs."FinInstrmId", cs."TckrSymb", cs."FinInstrmNm",
-      ci.sector_name, ci.industry_name, ci.leaf_name,
-      sm.cmp, sm.pe, sm.mkt_cap, sm.div_yld, sm.np_qtr, sm.profit_var, sm.sales_qtr, sm.sales_var, sm.roce
-    FROM stock_metrics sm
-    JOIN company_stock cs ON
-       (sm.symbol = cs."FinInstrmId"::text OR UPPER(sm.symbol) = UPPER(cs."TckrSymb"))
-    LEFT JOIN company_sectors ci ON
-       cs."FinInstrmId"::text = ci.fin_instrm_id OR UPPER(cs."TckrSymb") = UPPER(ci.fin_instrm_id)
+    ${baseCte}
+    SELECT
+      "FinInstrmId", "TckrSymb", "FinInstrmNm",
+      sector_name, industry_name, leaf_name,
+      cmp, pe, mkt_cap, div_yld, np_qtr, profit_var, sales_qtr, sales_var, roce
+    FROM base
     ${whereClause}
     ORDER BY ${sortColumn} ${sortOrder} NULLS LAST
     LIMIT $${params.length + 1} OFFSET $${params.length + 2}
