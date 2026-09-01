@@ -41,8 +41,10 @@ const hasJsonForStock = async (scripCd: string): Promise<boolean> => {
   
   if (stockResult.rows.length > 0) {
     const ticker = stockResult.rows[0].TckrSymb;
-    if (await checkFileExists(path.join(outputDir, `${ticker}.json`))) return true;
-    if (await checkFileExists(path.join(consolidatedDir, `${ticker}.json`))) return true;
+    if (ticker) {
+      if (await checkFileExists(path.join(outputDir, `${ticker}.json`))) return true;
+      if (await checkFileExists(path.join(consolidatedDir, `${ticker}.json`))) return true;
+    }
   }
   
   return false;
