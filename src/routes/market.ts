@@ -16,6 +16,38 @@ function clampLimit(raw: unknown, def: number, max: number): number {
   return Math.min(n, max);
 }
 
+const fs = require('fs').promises;
+const path = require('path');
+const outputDir = process.env.STATIC_JSON_DIR || '/opt/sodhaniScrap/output';
+const consolidatedDir = process.env.CONSOLIDATED_JSON_DIR || '/opt/sodhaniScrap/output_consolidated';
+
+const checkFileExists = async (filePath: string) => {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const hasJsonForStock = async (scripCd: string): Promise<boolean> => {
+  if (await checkFileExists(path.join(outputDir, `${scripCd}.json`))) return true;
+  if (await checkFileExists(path.join(consolidatedDir, `${scripCd}.json`))) return true;
+
+  const stockResult = await pool.query(
+    `SELECT "TckrSymb" FROM company_stock WHERE "FinInstrmId"::text = $1 LIMIT 1`,
+    [scripCd]
+  );
+  
+  if (stockResult.rows.length > 0) {
+    const ticker = stockResult.rows[0].TckrSymb;
+    if (await checkFileExists(path.join(outputDir, `${ticker}.json`))) return true;
+    if (await checkFileExists(path.join(consolidatedDir, `${ticker}.json`))) return true;
+  }
+  
+  return false;
+};
+
 // GET /api/recent-results
 // Reads the screener_checkpoint.json and returns tickers updated in the last 14 days
 router.get('/recent-results', asyncHandler(async (req, res) => {
@@ -139,10 +171,18 @@ router.get('/top-gainers', asyncHandler(async (req, res) => {
      WHERE "type" = 'gainer' 
        AND "record_time"::DATE = (SELECT MAX("record_time")::DATE FROM bse_top_gainers_losers)
      ORDER BY "change_percent" DESC
-     LIMIT $1`,
-    [limit]
+     LIMIT 200`
   );
-  res.json({ count: result.rows.length, gainers: result.rows });
+  
+  const validGainers = [];
+  for (const row of result.rows) {
+    if (validGainers.length >= limit) break;
+    if (await hasJsonForStock(row.scrip_cd)) {
+      validGainers.push(row);
+    }
+  }
+
+  res.json({ count: validGainers.length, gainers: validGainers });
 }));
 
 // GET /api/top-losers?limit=10
@@ -154,10 +194,18 @@ router.get('/top-losers', asyncHandler(async (req, res) => {
      WHERE "type" = 'loser'
        AND "record_time"::DATE = (SELECT MAX("record_time")::DATE FROM bse_top_gainers_losers)
      ORDER BY "change_percent" ASC
-     LIMIT $1`,
-    [limit]
+     LIMIT 200`
   );
-  res.json({ count: result.rows.length, losers: result.rows });
+
+  const validLosers = [];
+  for (const row of result.rows) {
+    if (validLosers.length >= limit) break;
+    if (await hasJsonForStock(row.scrip_cd)) {
+      validLosers.push(row);
+    }
+  }
+
+  res.json({ count: validLosers.length, losers: validLosers });
 }));
 
 // GET /api/volume-shockers?limit=20
@@ -169,10 +217,18 @@ router.get('/volume-shockers', asyncHandler(async (req, res) => {
      FROM bse_spurt_volume
      WHERE "record_date"::DATE = (SELECT MAX("record_date")::DATE FROM bse_spurt_volume)
      ORDER BY "volumechangetimes" DESC NULLS LAST
-     LIMIT $1`,
-    [limit]
+     LIMIT 200`
   );
-  res.json({ count: result.rows.length, volume_shockers: result.rows });
+
+  const validShockers = [];
+  for (const row of result.rows) {
+    if (validShockers.length >= limit) break;
+    if (await hasJsonForStock(row.scrip_cd)) {
+      validShockers.push(row);
+    }
+  }
+
+  res.json({ count: validShockers.length, volume_shockers: validShockers });
 }));
 
 // GET /api/quote/:symbol - latest snapshot for a ticker (price, volume, etc.)
