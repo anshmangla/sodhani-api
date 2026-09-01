@@ -809,7 +809,7 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
   if (!data) {
     try {
       const dbRes = await pool.query(
-        `SELECT "FinInstrmId" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
+        `SELECT "FinInstrmId", "TckrSymb" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
         [query]
       );
       fallbackDebug = { rowsFound: dbRes.rows.length };
@@ -821,6 +821,9 @@ router.get('/static-stock', asyncHandler(async (req, res) => {
           const finId = rawId.toString();
           fallbackDebug.finId = finId;
           data = await searchStaticStock(outputDir, finId);
+          if (!data && row.TckrSymb) {
+            data = await searchStaticStock(outputDir, row.TckrSymb);
+          }
           fallbackDebug.dataFound = !!data;
         }
       }
@@ -853,7 +856,7 @@ router.get('/static-stock-consolidated', asyncHandler(async (req, res) => {
   if (!data) {
     try {
       const dbRes = await pool.query(
-        `SELECT "FinInstrmId" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
+        `SELECT "FinInstrmId", "TckrSymb" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
         [query]
       );
       if (dbRes.rows.length > 0) {
@@ -862,6 +865,9 @@ router.get('/static-stock-consolidated', asyncHandler(async (req, res) => {
         if (rawId) {
           const finId = rawId.toString();
           data = await searchStaticStock(consolidatedDir, finId);
+          if (!data && row.TckrSymb) {
+            data = await searchStaticStock(consolidatedDir, row.TckrSymb);
+          }
         }
       }
     } catch (e) {
