@@ -18,6 +18,7 @@ export const app = express();
 const allowedOrigins = [
   'https://safedge.in',
   'https://www.safedge.in',
+  'https://ra.safedge.in',
   'https://sodhani.vercel.app', 
   'http://localhost:5173',      
   'http://localhost:3000'       
