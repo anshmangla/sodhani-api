@@ -2,7 +2,6 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { pool } from '../db/pool';
 import { signAuthToken, signSignupToken, verifySignupToken } from '../auth/jwt';
 import { verifyMsg91AccessToken, sendMsg91Otp, verifyMsg91Otp } from '../auth/msg91';
-import { verifyGoogleIdToken } from '../auth/google';
 import { requireAuth } from '../auth/middleware';
 import {
   profilePictureUpload,
@@ -202,47 +201,6 @@ router.post('/verify-otp-login', asyncHandler(async (req, res) => {
   res.status(200).json({ token, user });
 }));
 
-// POST /api/auth/google { credential }
-router.post('/google', asyncHandler(async (req, res) => {
-  const { credential } = req.body ?? {};
-  if (!credential) {
-    res.status(400).json({ detail: 'credential is required' });
-    return;
-  }
-
-  let identity;
-  try {
-    identity = await verifyGoogleIdToken(credential);
-  } catch {
-    res.status(401).json({ detail: 'Google sign-in verification failed' });
-    return;
-  }
-
-  const existing = await pool.query(
-    `SELECT ${USER_COLUMNS}, token_version FROM users WHERE lower(email) = lower($1)`,
-    [identity.email]
-  );
-
-  let user;
-  let tokenVersion: number;
-  if (existing.rows.length > 0) {
-    const { token_version, ...rest } = existing.rows[0];
-    user = rest;
-    tokenVersion = token_version;
-  } else {
-    const inserted = await pool.query(
-      `INSERT INTO users (name, email, auth_provider)
-       VALUES ($1, $2, 'google')
-       RETURNING ${USER_COLUMNS}`,
-      [identity.name, identity.email]
-    );
-    user = inserted.rows[0];
-    tokenVersion = 0;
-  }
-
-  const token = signAuthToken(user.id, tokenVersion);
-  res.status(200).json({ token, user });
-}));
 
 // GET /api/auth/me
 router.get('/me', requireAuth, asyncHandler(async (req, res) => {

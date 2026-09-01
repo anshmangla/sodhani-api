@@ -41,7 +41,6 @@ src/
 ├── auth/
 │   ├── jwt.ts            # signAuthToken / verifyAuthToken (session JWTs, consumer users)
 │   ├── msg91.ts          # verifyMsg91AccessToken (phone OTP verification)
-│   ├── google.ts         # verifyGoogleIdToken (Google ID token verification)
 │   ├── middleware.ts     # requireAuth Express middleware (consumer users)
 │   ├── raJwt.ts          # signRaAuthToken / verifyRaAuthToken (RA session JWTs)
 │   └── raMiddleware.ts   # requireRaAuth Express middleware (Research Analysts)
@@ -105,7 +104,7 @@ Copy `.env.example` to `.env` and fill in:
 | `HOST` | Interface to bind to (defaults to `127.0.0.1` — keep it that way so the app is only reachable through nginx, not directly from the internet) | `127.0.0.1` |
 | `JWT_SECRET` | HMAC secret used to sign/verify session JWTs issued by `/api/auth/*`. Generate with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` | *(random hex string)* |
 | `MSG91_AUTH_KEY` | MSG91 auth key, used server-side to verify OTP widget access tokens against MSG91's `verifyAccessToken` API | *(from MSG91 dashboard)* |
-| `GOOGLE_CLIENT_ID` | Google OAuth client ID, used as the audience when verifying Google ID tokens from `/api/auth/google` | *(from Google Cloud Console)* |
+
 | `RA_JWT_SECRET` | HMAC secret used to sign/verify Research Analyst session JWTs issued by `/api/ra/login`. Separate from `JWT_SECRET` so RA and consumer sessions can't be swapped for one another. Generate the same way as `JWT_SECRET` | *(random hex string)* |
 | `RAZORPAY_KEY_ID` | Razorpay API key ID, used to create checkout orders and returned to the client to initialize Razorpay Checkout | *(from Razorpay dashboard)* |
 | `RAZORPAY_KEY_SECRET` | Razorpay API key secret, used server-side to create orders and verify checkout signatures | *(from Razorpay dashboard)* |
@@ -115,7 +114,7 @@ Copy `.env.example` to `.env` and fill in:
 
 ```bash
 npm install
-cp .env.example .env   # fill in DATABASE_URL, JWT_SECRET, MSG91_AUTH_KEY, GOOGLE_CLIENT_ID,
+cp .env.example .env   # fill in DATABASE_URL, JWT_SECRET, MSG91_AUTH_KEY,
                         # RA_JWT_SECRET, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET
 npm run migrate         # applies all pending db/migrations/*.sql (idempotent, safe to re-run)
 npm run seed:ra          # creates dummy RA dev accounts (see scripts/seed-research-analysts.ts)
@@ -1052,7 +1051,7 @@ Set the order of items within a playlist. `order` must be the full set of symbol
 
 ## Authentication
 
-Endpoints under `/api/auth/*` back the phone-OTP + Google sign-in flow used by `sodhani-web`. They read and write a `users` table (see `db/migrations/0001_create_users.sql`) in the same Postgres database as the market-data tables.
+Endpoints under `/api/auth/*` back the phone-OTP flow used by `sodhani-web`. They read and write a `users` table (see `db/migrations/0001_create_users.sql`) in the same Postgres database as the market-data tables.
 
 **Note on error shape:** market routes (`/api/*`) return errors as `{ "error": "..." }`. Auth routes (`/api/auth/*`) return errors as `{ "detail": "..." }` instead — a deliberate inconsistency, not an oversight, made to match `sodhani-web`'s existing `AuthContext.tsx` client, which already expects `detail`.
 
@@ -1123,27 +1122,7 @@ Verifies an MSG91 OTP widget access token and logs an existing account in.
 - `401` `{ "detail": "OTP verification failed" }`
 - `404` `{ "detail": "No account found for this phone number" }`
 
----
 
-### `POST /api/auth/google`
-
-Verifies a Google ID token and finds-or-creates an account by (lowercased) email.
-
-**Body**
-```json
-{ "credential": "<google id token>" }
-```
-
-**Response** `200`
-```json
-{ "token": "<jwt>", "user": { "id": "...", "name": "Jane Doe", "age": null, "email": "jane@example.com", "phone_number": null } }
-```
-
-**Errors**
-- `400` `{ "detail": "credential is required" }`
-- `401` `{ "detail": "Google sign-in verification failed" }`
-
----
 
 ### `GET /api/auth/me`
 
@@ -1168,7 +1147,7 @@ Kicks off the account-deletion flow for the authenticated user. Requires `Author
 { "ok": true, "skipped": false, "phone_number": "+919999999999" }
 ```
 
-If the user has no phone number on file (e.g. a Google-only account), OTP verification is skipped:
+If the user has no phone number on file, OTP verification is skipped:
 ```json
 { "ok": true, "skipped": true }
 ```
@@ -1184,7 +1163,7 @@ Deletes the authenticated user's account. Requires `Authorization: Bearer <jwt>`
 { "access_token": "<msg91 widget access token>" }
 ```
 
-`access_token` is **required only if the user has a phone number on file** (Google-only accounts with no phone number are deleted without an OTP step). When present, it's verified server-side against MSG91; the account is deleted only if verification succeeds. Deletion runs in a single transaction that removes the user's `purchased_calls`, `payments`, and `users` rows.
+`access_token` is **required only if the user has a phone number on file** (users with no phone number are deleted without an OTP step). When present, it's verified server-side against MSG91; the account is deleted only if verification succeeds. Deletion runs in a single transaction that removes the user's `purchased_calls`, `payments`, and `users` rows.
 
 **Response** `200`
 ```json

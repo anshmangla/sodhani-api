@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS users (
   age            INTEGER,
   email          TEXT,
   phone_number   TEXT UNIQUE,
-  auth_provider  TEXT NOT NULL DEFAULT 'otp' CHECK (auth_provider IN ('otp', 'google')),
+  auth_provider  TEXT NOT NULL DEFAULT 'otp' CHECK (auth_provider IN ('otp')),
   token_version  INTEGER NOT NULL DEFAULT 0,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
