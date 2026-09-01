@@ -15,7 +15,18 @@ import watchlistRouter from './routes/watchlist';
 
 export const app = express();
 
-app.use(cors());
+const allowedOrigins = [
+  'https://safedge.in',
+  'https://www.safedge.in',
+  'https://sodhani.vercel.app', 
+  'http://localhost:5173',      
+  'http://localhost:3000'       
+];
+
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true
+}));
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
