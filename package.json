@@ -10,6 +10,7 @@
     "seed:calls": "ts-node scripts/seed-sample-data.ts",
     "verify:ra-transfers": "ts-node scripts/verify-ra-transfers.ts",
     "migrate": "ts-node scripts/migrate.ts",
+    "split:company-data": "ts-node scripts/split_company_data.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

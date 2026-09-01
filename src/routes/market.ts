@@ -1,6 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { pool } from '../db/pool';
 import { lttb } from '../utils/lttb';
+import {
+  getCompanyConcern,
+  isKnownConcern,
+  concernRequiresVariant,
+  Variant,
+} from '../services/companySplitDataService';
 
 const router = Router();
 
@@ -880,6 +886,71 @@ router.get('/static-stock-consolidated', asyncHandler(async (req, res) => {
   } else {
     res.status(404).json({ error: `Consolidated static JSON not found for '${query}'` });
   }
+}));
+
+// GET /api/company/:symbol/:concern?variant=standalone|consolidated
+//
+// Serves a single concern file out of output_split/ (OUTPUT_SPLIT_DIR, defaults
+// to /opt/sodhaniScrap/output_split - see scripts/split_company_data.ts, which
+// generates that directory from output/ and output_consolidated/) instead of
+// the full static-stock(-consolidated) payload. `variant` selects standalone
+// vs consolidated financials for concerns that differ between the two
+// screener.in pages; it's required-with-a-default (defaults to 'consolidated')
+// and ignored for concerns that don't vary by source (shareholding, industry).
+router.get('/company/:symbol/:concern', asyncHandler(async (req, res) => {
+  const { symbol, concern } = req.params;
+
+  if (!isKnownConcern(concern)) {
+    res.status(400).json({ error: `Unknown concern '${concern}'.` });
+    return;
+  }
+
+  const rawVariant = req.query.variant;
+  let variant: Variant = 'consolidated';
+  if (concernRequiresVariant(concern) && rawVariant !== undefined) {
+    if (rawVariant !== 'standalone' && rawVariant !== 'consolidated') {
+      res.status(400).json({ error: `Invalid variant '${rawVariant}'. Expected 'standalone' or 'consolidated'.` });
+      return;
+    }
+    variant = rawVariant;
+  }
+
+  const splitDir = process.env.OUTPUT_SPLIT_DIR || '/opt/sodhaniScrap/output_split';
+  const mappingsPath = path.resolve(__dirname, '../../exchange_code_mappings.json');
+
+  let result = getCompanyConcern({ splitDir, mappingsPath, symbolQuery: symbol, concern, variant });
+
+  // Ultimate fallback, same as /api/static-stock-consolidated: map an incoming
+  // TckrSymb back to its FinInstrmId via the live database and retry.
+  if (result.status === 'company_not_found') {
+    try {
+      const dbRes = await pool.query(
+        `SELECT "FinInstrmId" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
+        [symbol]
+      );
+      if (dbRes.rows.length > 0) {
+        const row = dbRes.rows[0];
+        const rawId = row.FinInstrmId ?? row.fininstrmid ?? Object.values(row)[0];
+        if (rawId) {
+          result = getCompanyConcern({ splitDir, mappingsPath, symbolQuery: rawId.toString(), concern, variant });
+        }
+      }
+    } catch (e) {
+      console.error('Database fallback failed:', e);
+    }
+  }
+
+  if (result.status === 'company_not_found') {
+    res.status(404).json({ error: `Company '${symbol}' not found in split output.` });
+    return;
+  }
+  if (result.status === 'concern_not_found') {
+    const variantSuffix = concernRequiresVariant(concern) ? ` (${variant})` : '';
+    res.status(404).json({ error: `${concern}${variantSuffix} not available for '${symbol}'.` });
+    return;
+  }
+
+  res.json(result.data);
 }));
 
 // GET /api/metrics/:symbol
