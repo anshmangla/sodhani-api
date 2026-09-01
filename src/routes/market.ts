@@ -136,7 +136,8 @@ router.get('/top-gainers', asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT "rank", "scrip_cd", "scripname", "long_name", "ltradert", "change_val", "change_percent", "record_time"
      FROM bse_top_gainers_losers
-     WHERE "type" = 'gainer'
+     WHERE "type" = 'gainer' 
+       AND "record_time"::DATE = (SELECT MAX("record_time")::DATE FROM bse_top_gainers_losers)
      ORDER BY "change_percent" DESC
      LIMIT $1`,
     [limit]
@@ -151,6 +152,7 @@ router.get('/top-losers', asyncHandler(async (req, res) => {
     `SELECT "rank", "scrip_cd", "scripname", "long_name", "ltradert", "change_val", "change_percent", "record_time"
      FROM bse_top_gainers_losers
      WHERE "type" = 'loser'
+       AND "record_time"::DATE = (SELECT MAX("record_time")::DATE FROM bse_top_gainers_losers)
      ORDER BY "change_percent" ASC
      LIMIT $1`,
     [limit]
