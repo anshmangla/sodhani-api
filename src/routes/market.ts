@@ -252,9 +252,9 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
             hp_latest."true_high" AS "HighPric",
             hp_latest."true_low" AS "LowPric",
             hp_latest."true_close" AS "ClosePric",
-            (hp_latest."true_close"::float - hp_latest."true_open"::float) AS "ChangeVal",
-            CASE WHEN hp_latest."true_open"::float > 0
-              THEN ((hp_latest."true_close"::float - hp_latest."true_open"::float) / hp_latest."true_open"::float) * 100
+            (hp_latest."true_close"::float - hp_prev."prev_close"::float) AS "ChangeVal",
+            CASE WHEN hp_prev."prev_close"::float > 0
+              THEN ((hp_latest."true_close"::float - hp_prev."prev_close"::float) / hp_prev."prev_close"::float) * 100
               ELSE 0
             END AS "ChangePercent"
      FROM company_stock cs
@@ -274,6 +274,14 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
            WHERE "FinInstrmId" = cs."FinInstrmId"
          )
      ) hp_latest ON true
+     LEFT JOIN LATERAL (
+       SELECT close_price as prev_close
+       FROM historical_prices hp
+       WHERE hp."FinInstrmId" = cs."FinInstrmId"
+         AND DATE(hp.record_date) < DATE(hp_latest.true_date)
+       ORDER BY hp.record_date DESC
+       LIMIT 1
+     ) hp_prev ON true
      WHERE UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1
      LIMIT 1`,
     [symbol]
@@ -320,9 +328,9 @@ router.get('/quotes', asyncHandler(async (req, res) => {
             hp_latest."true_high" AS "HighPric",
             hp_latest."true_low" AS "LowPric",
             hp_latest."true_close" AS "ClosePric",
-            (hp_latest."true_close"::float - hp_latest."true_open"::float) AS "ChangeVal",
-            CASE WHEN hp_latest."true_open"::float > 0
-              THEN ((hp_latest."true_close"::float - hp_latest."true_open"::float) / hp_latest."true_open"::float) * 100
+            (hp_latest."true_close"::float - hp_prev."prev_close"::float) AS "ChangeVal",
+            CASE WHEN hp_prev."prev_close"::float > 0
+              THEN ((hp_latest."true_close"::float - hp_prev."prev_close"::float) / hp_prev."prev_close"::float) * 100
               ELSE 0
             END AS "ChangePercent"
      FROM company_stock cs
@@ -342,6 +350,14 @@ router.get('/quotes', asyncHandler(async (req, res) => {
            WHERE "FinInstrmId" = cs."FinInstrmId"
          )
      ) hp_latest ON true
+     LEFT JOIN LATERAL (
+       SELECT close_price as prev_close
+       FROM historical_prices hp
+       WHERE hp."FinInstrmId" = cs."FinInstrmId"
+         AND DATE(hp.record_date) < DATE(hp_latest.true_date)
+       ORDER BY hp.record_date DESC
+       LIMIT 1
+     ) hp_prev ON true
      WHERE UPPER(cs."TckrSymb") = ANY($1) OR cs."FinInstrmId"::text = ANY($2)`,
     [upperCodes, codes]
   );
