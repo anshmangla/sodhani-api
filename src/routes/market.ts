@@ -276,10 +276,14 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
      ) hp_latest ON true
      LEFT JOIN LATERAL (
        SELECT close_price as prev_close
-       FROM historical_prices hp
-       WHERE hp."FinInstrmId" = cs."FinInstrmId"
-         AND DATE(hp.record_date) < DATE(hp_latest.true_date)
-       ORDER BY hp.record_date DESC
+       FROM historical_prices hp2
+       WHERE hp2."FinInstrmId" = cs."FinInstrmId"
+         AND DATE(hp2.record_date) < (
+           SELECT MAX(DATE(record_date))
+           FROM historical_prices
+           WHERE "FinInstrmId" = cs."FinInstrmId"
+         )
+       ORDER BY hp2.record_date DESC
        LIMIT 1
      ) hp_prev ON true
      WHERE UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1
@@ -352,10 +356,14 @@ router.get('/quotes', asyncHandler(async (req, res) => {
      ) hp_latest ON true
      LEFT JOIN LATERAL (
        SELECT close_price as prev_close
-       FROM historical_prices hp
-       WHERE hp."FinInstrmId" = cs."FinInstrmId"
-         AND DATE(hp.record_date) < DATE(hp_latest.true_date)
-       ORDER BY hp.record_date DESC
+       FROM historical_prices hp2
+       WHERE hp2."FinInstrmId" = cs."FinInstrmId"
+         AND DATE(hp2.record_date) < (
+           SELECT MAX(DATE(record_date))
+           FROM historical_prices
+           WHERE "FinInstrmId" = cs."FinInstrmId"
+         )
+       ORDER BY hp2.record_date DESC
        LIMIT 1
      ) hp_prev ON true
      WHERE UPPER(cs."TckrSymb") = ANY($1) OR cs."FinInstrmId"::text = ANY($2)`,
