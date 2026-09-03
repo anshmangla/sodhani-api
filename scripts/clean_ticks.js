@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { Pool } = require('pg');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 async function run() {
@@ -12,7 +13,7 @@ async function run() {
     }
     for (let i = 0; i < toDelete.length; i += 1000) {
       const chunk = toDelete.slice(i, i + 1000);
-      await pool.query(DELETE FROM historical_prices WHERE ctid = ANY(), [chunk]);
+      await pool.query('DELETE FROM historical_prices WHERE ctid = ANY($1)', [chunk]);
     }
     console.log('Deleted', toDelete.length, 'rows from historical_prices');
     
@@ -26,7 +27,7 @@ async function run() {
     }
     for (let i = 0; i < toDelete.length; i += 1000) {
       const chunk = toDelete.slice(i, i + 1000);
-      await pool.query(DELETE FROM bse_index_history WHERE ctid = ANY(), [chunk]);
+      await pool.query('DELETE FROM bse_index_history WHERE ctid = ANY($1)', [chunk]);
     }
     console.log('Deleted', toDelete.length, 'rows from bse_index_history');
     
@@ -40,9 +41,11 @@ async function run() {
     }
     for (let i = 0; i < toDelete.length; i += 1000) {
       const chunk = toDelete.slice(i, i + 1000);
-      await pool.query(DELETE FROM nse_index_history WHERE ctid = ANY(), [chunk]);
+      await pool.query('DELETE FROM nse_index_history WHERE ctid = ANY($1)', [chunk]);
     }
     console.log('Deleted', toDelete.length, 'rows from nse_index_history');
+  } catch (err) {
+    console.error(err);
   } finally {
     await pool.end();
   }
