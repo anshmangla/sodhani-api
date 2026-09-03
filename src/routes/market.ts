@@ -981,16 +981,30 @@ router.get('/company/:symbol/:concern', asyncHandler(async (req, res) => {
 router.get('/metrics/:symbol', asyncHandler(async (req, res) => {
   const symbol = req.params.symbol;
   
+  const csResult = await pool.query(
+    `SELECT "FinInstrmId", "TckrSymb" FROM company_stock 
+     WHERE UPPER("TckrSymb") = UPPER($1 || '.BO') 
+        OR UPPER("TckrSymb") = UPPER($1 || '.NS') 
+        OR UPPER("TckrSymb") = UPPER($1) 
+        OR "FinInstrmId"::text = $1 
+     LIMIT 1`, [symbol]
+  );
+  
+  let finId = '';
+  let tckrSymb = symbol;
+  if (csResult.rows.length > 0) {
+     finId = csResult.rows[0].FinInstrmId ? csResult.rows[0].FinInstrmId.toString() : '';
+     tckrSymb = csResult.rows[0].TckrSymb.replace(/\.(NS|BO)$/i, '');
+  }
+
   const result = await pool.query(
     `SELECT sm.* 
      FROM stock_metrics sm
-     LEFT JOIN company_stock cs ON 
-        (sm.symbol = cs."FinInstrmId"::text OR UPPER(sm.symbol) = UPPER(cs."TckrSymb"))
      WHERE UPPER(sm.symbol) = UPPER($1) 
-        OR UPPER(cs."TckrSymb") = UPPER($1) 
-        OR cs."FinInstrmId"::text = $1
+        OR sm.symbol = $2
+        OR UPPER(sm.symbol) = UPPER($3)
      LIMIT 1`,
-    [symbol]
+    [symbol, finId, tckrSymb]
   );
 
   if (result.rows.length === 0) {
