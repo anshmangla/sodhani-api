@@ -66,7 +66,11 @@ router.get('/company/:symbol/peers', asyncHandler(async (req, res) => {
   const stockResult = await pool.query(
     `SELECT "FinInstrmId", "TckrSymb", "FinInstrmNm"
      FROM company_stock
-     WHERE UPPER("TckrSymb") = UPPER($1) OR "FinInstrmId"::text = $1
+     WHERE 
+       UPPER("TckrSymb") = UPPER($1) OR 
+       UPPER("TckrSymb") = UPPER($1 || '.BO') OR 
+       UPPER("TckrSymb") = UPPER($1 || '.NS') OR 
+       "FinInstrmId"::text = $1
      LIMIT 1`,
     [symbol]
   );
