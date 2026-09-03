@@ -410,7 +410,9 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
       // Same shape as the other ranges (sargable >= against an interval) so
       // this can use an index range scan instead of wrapping record_date in
       // DATE() on both sides, which forced a full scan of the symbol's history.
-      timeFilter = `AND hp."record_date" >= DATE_TRUNC('day', (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId"))`;
+      // We use > instead of >= to strictly exclude the 00:00:00 midnight tick 
+      // (Yahoo Finance EOD data), so 1d chart ONLY shows true intraday ticks.
+      timeFilter = `AND hp."record_date" > DATE_TRUNC('day', (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId"))`;
     } else if (range === '1w') {
       timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '7 days'`;
     } else if (range === '1m') {
@@ -1190,13 +1192,11 @@ router.get('/indices/:code/history', asyncHandler(async (req, res) => {
      FROM ${source.historyTable}
      WHERE "${source.historyIdCol}" = $1
        AND ${sessionFilter}
-       AND "record_time" >= (
-             CASE WHEN '${range}' = '1d' THEN 
-                DATE_TRUNC('day', (SELECT MAX("record_time") FROM ${source.historyTable} WHERE "${source.historyIdCol}" = $1 AND ${sessionFilter}))
-             ELSE 
-                (SELECT MAX("record_time") FROM ${source.historyTable} WHERE "${source.historyIdCol}" = $1 AND ${sessionFilter}) - INTERVAL '${cfg.interval}'
-             END
-           )
+       AND (
+         ('${range}' = '1d' AND "record_time" > DATE_TRUNC('day', (SELECT MAX("record_time") FROM ${source.historyTable} WHERE "${source.historyIdCol}" = $1 AND ${sessionFilter})))
+         OR 
+         ('${range}' != '1d' AND "record_time" >= (SELECT MAX("record_time") FROM ${source.historyTable} WHERE "${source.historyIdCol}" = $1 AND ${sessionFilter}) - INTERVAL '${cfg.interval}')
+       )
      ORDER BY "record_time" DESC
      LIMIT $2`,
     [resolvedCode, limit]
