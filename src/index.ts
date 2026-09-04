@@ -1,6 +1,9 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+// Ensure all naive timestamps returned by pg are parsed as IST
+process.env.TZ = 'Asia/Kolkata';
+
 import { app } from './app';
 
 const PORT = parseInt(process.env.PORT || '4000', 10);
