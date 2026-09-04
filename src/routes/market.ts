@@ -252,6 +252,7 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
             hp_latest."true_high" AS "HighPric",
             hp_latest."true_low" AS "LowPric",
             hp_latest."true_close" AS "ClosePric",
+              hp_prev."prev_close" AS "PrevClosePric",
             (hp_latest."true_close"::float - hp_prev."prev_close"::float) AS "ChangeVal",
             CASE WHEN hp_prev."prev_close"::float > 0
               THEN ((hp_latest."true_close"::float - hp_prev."prev_close"::float) / hp_prev."prev_close"::float) * 100
@@ -332,6 +333,7 @@ router.get('/quotes', asyncHandler(async (req, res) => {
             hp_latest."true_high" AS "HighPric",
             hp_latest."true_low" AS "LowPric",
             hp_latest."true_close" AS "ClosePric",
+              hp_prev."prev_close" AS "PrevClosePric",
             (hp_latest."true_close"::float - hp_prev."prev_close"::float) AS "ChangeVal",
             CASE WHEN hp_prev."prev_close"::float > 0
               THEN ((hp_latest."true_close"::float - hp_prev."prev_close"::float) / hp_prev."prev_close"::float) * 100
