@@ -13,6 +13,12 @@ dotenv.config();
 types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)));
 types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)));
 
+// Override default parsing for timestamp without time zone (OID 1114).
+// The database natively stores these as naive IST timestamps, but pg defaults
+// to interpreting them in the server's local time (e.g. UTC on Azure).
+// We explicitly append '+05:30' so they are correctly parsed as IST dates.
+types.setTypeParser(1114, (val) => (val === null ? null : new Date(val + '+05:30')));
+
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
