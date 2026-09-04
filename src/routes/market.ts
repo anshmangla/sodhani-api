@@ -284,8 +284,11 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
            FROM historical_prices
            WHERE "FinInstrmId" = cs."FinInstrmId"
          )
-       ORDER BY hp2.record_date DESC
-       LIMIT 1
+       ORDER BY 
+           DATE(hp2.record_date) DESC,
+           CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
+           hp2.record_date DESC
+         LIMIT 1
      ) hp_prev ON true
      WHERE UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1
      LIMIT 1`,
@@ -365,8 +368,11 @@ router.get('/quotes', asyncHandler(async (req, res) => {
            FROM historical_prices
            WHERE "FinInstrmId" = cs."FinInstrmId"
          )
-       ORDER BY hp2.record_date DESC
-       LIMIT 1
+       ORDER BY 
+           DATE(hp2.record_date) DESC,
+           CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
+           hp2.record_date DESC
+         LIMIT 1
      ) hp_prev ON true
      WHERE UPPER(cs."TckrSymb") = ANY($1) OR cs."FinInstrmId"::text = ANY($2)`,
     [upperCodes, codes]
