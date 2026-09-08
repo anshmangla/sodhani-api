@@ -683,7 +683,7 @@ router.get('/screener', asyncHandler(async (req, res) => {
   const baseCte = `
     WITH base AS (
       SELECT DISTINCT ON (cs."FinInstrmId")
-        cs."FinInstrmId", cs."TckrSymb", cs."FinInstrmNm",
+        cs."FinInstrmId", cs."TckrSymb", COALESCE(NULLIF(cs."FinInstrmNm", ''), NULLIF(ci.company_name, '')) AS "FinInstrmNm",
         ci.sector_name, ci.industry_name, ci.leaf_name, ci.leaf_code,
         sm.cmp, sm.pe, sm.mkt_cap, sm.div_yld, sm.np_qtr, sm.profit_var, sm.sales_qtr, sm.sales_var, sm.roce
       FROM company_stock cs

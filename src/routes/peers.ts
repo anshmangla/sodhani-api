@@ -45,7 +45,7 @@ async function fetchLevelRows(column: LevelColumn, code: string): Promise<PeerLe
   const result = await pool.query(
     `SELECT DISTINCT ON (cs."FinInstrmId")
             COALESCE(cs."TckrSymb", cs."FinInstrmId"::text) AS symbol,
-            cs."FinInstrmNm" AS name,
+            COALESCE(NULLIF(cs."FinInstrmNm", ''), NULLIF(ci.company_name, '')) AS name,
             sm.cmp, sm.pe, sm.mkt_cap, sm.profit_var
      FROM company_sectors ci
      JOIN company_stock cs ON
