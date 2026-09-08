@@ -559,12 +559,82 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
   const earliestOpen = Number(history[history.length - 1].open_price);
   const changePercent = earliestOpen ? ((latestPrice - earliestOpen) / earliestOpen) * 100 : 0;
 
+  // Fetch pre-computed price extremes for the company
+  let extremesRow: any = null;
+  try {
+    const extremesRes = await pool.query(
+      `SELECT cpe.*
+       FROM company_price_extremes cpe
+       JOIN company_stock cs ON cs."FinInstrmId" = cpe."FinInstrmId"
+       WHERE (UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1)
+       LIMIT 1`,
+      [symbol]
+    );
+    if (extremesRes.rows.length > 0) {
+      extremesRow = extremesRes.rows[0];
+    }
+  } catch (e: any) {
+    console.warn('Failed to query company_price_extremes:', e.message);
+  }
+
+  let highPrice: number | null = null;
+  let lowPrice: number | null = null;
+
+  if (extremesRow) {
+    switch (range) {
+      case '1d':
+        highPrice = extremesRow.high_1d !== null ? Number(extremesRow.high_1d) : null;
+        lowPrice = extremesRow.low_1d !== null ? Number(extremesRow.low_1d) : null;
+        break;
+      case '1w':
+        highPrice = extremesRow.high_1w !== null ? Number(extremesRow.high_1w) : null;
+        lowPrice = extremesRow.low_1w !== null ? Number(extremesRow.low_1w) : null;
+        break;
+      case '1m':
+        highPrice = extremesRow.high_1m !== null ? Number(extremesRow.high_1m) : null;
+        lowPrice = extremesRow.low_1m !== null ? Number(extremesRow.low_1m) : null;
+        break;
+      case '1y':
+        highPrice = extremesRow.high_1y !== null ? Number(extremesRow.high_1y) : null;
+        lowPrice = extremesRow.low_1y !== null ? Number(extremesRow.low_1y) : null;
+        break;
+      case '5y':
+        highPrice = extremesRow.high_5y !== null ? Number(extremesRow.high_5y) : null;
+        lowPrice = extremesRow.low_5y !== null ? Number(extremesRow.low_5y) : null;
+        break;
+      case 'max':
+        highPrice = extremesRow.high_all !== null ? Number(extremesRow.high_all) : null;
+        lowPrice = extremesRow.low_all !== null ? Number(extremesRow.low_all) : null;
+        break;
+      default:
+        break;
+    }
+  }
+
+  // Fallback to returned history slice if pre-computed values are missing or for custom range
+  if (highPrice === null && history.length > 0) {
+    highPrice = Math.max(...history.map((p: any) => Number(p.high_price ?? p.close_price)));
+  }
+  if (lowPrice === null && history.length > 0) {
+    lowPrice = Math.min(...history.map((p: any) => Number(p.low_price ?? p.close_price)));
+  }
+
   res.json({
     symbol: symbol.toUpperCase(), 
     range,
     chartType,
     count: history.length, 
+    high_price: highPrice,
+    low_price: lowPrice,
     change_percent: changePercent,
+    extremes: extremesRow ? {
+      "1d": { high: extremesRow.high_1d !== null ? Number(extremesRow.high_1d) : null, low: extremesRow.low_1d !== null ? Number(extremesRow.low_1d) : null },
+      "1w": { high: extremesRow.high_1w !== null ? Number(extremesRow.high_1w) : null, low: extremesRow.low_1w !== null ? Number(extremesRow.low_1w) : null },
+      "1m": { high: extremesRow.high_1m !== null ? Number(extremesRow.high_1m) : null, low: extremesRow.low_1m !== null ? Number(extremesRow.low_1m) : null },
+      "1y": { high: extremesRow.high_1y !== null ? Number(extremesRow.high_1y) : null, low: extremesRow.low_1y !== null ? Number(extremesRow.low_1y) : null },
+      "5y": { high: extremesRow.high_5y !== null ? Number(extremesRow.high_5y) : null, low: extremesRow.low_5y !== null ? Number(extremesRow.low_5y) : null },
+      "all": { high: extremesRow.high_all !== null ? Number(extremesRow.high_all) : null, low: extremesRow.low_all !== null ? Number(extremesRow.low_all) : null }
+    } : null,
     history 
   });
 }));
