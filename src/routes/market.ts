@@ -93,15 +93,16 @@ router.get('/recent-results', asyncHandler(async (req, res) => {
     return;
   }
 
-  // Fetch names from company_stock
+  // Fetch names from company_stock (match by either BSE code or NSE ticker)
   const result = await pool.query(
-    `SELECT "TckrSymb", "FinInstrmNm" FROM company_stock WHERE "TckrSymb" = ANY($1)`,
-    [recentTickers]
+    `SELECT "FinInstrmId", "TckrSymb", "FinInstrmNm" FROM company_stock WHERE "FinInstrmId"::text = ANY($1) OR "TckrSymb" = ANY($2)`,
+    [recentTickers, recentTickers]
   );
 
   const nameMap = new Map();
   for (const row of result.rows) {
-    nameMap.set(row.TckrSymb, row.FinInstrmNm);
+    nameMap.set(row.FinInstrmId.toString(), row.FinInstrmNm);
+    if (row.TckrSymb) nameMap.set(row.TckrSymb, row.FinInstrmNm);
   }
 
   const output = recentTickers.map(ticker => ({
@@ -150,15 +151,16 @@ router.get('/recent-ipos', asyncHandler(async (req, res) => {
     return;
   }
 
-  // Fetch names from company_stock
+  // Fetch names from company_stock (match by either BSE code or NSE ticker)
   const result = await pool.query(
-    `SELECT "TckrSymb", "FinInstrmNm" FROM company_stock WHERE "TckrSymb" = ANY($1)`,
-    [recentTickers]
+    `SELECT "FinInstrmId", "TckrSymb", "FinInstrmNm" FROM company_stock WHERE "FinInstrmId"::text = ANY($1) OR "TckrSymb" = ANY($2)`,
+    [recentTickers, recentTickers]
   );
 
   const nameMap = new Map();
   for (const row of result.rows) {
-    nameMap.set(row.TckrSymb, row.FinInstrmNm);
+    nameMap.set(row.FinInstrmId.toString(), row.FinInstrmNm);
+    if (row.TckrSymb) nameMap.set(row.TckrSymb, row.FinInstrmNm);
   }
 
   const output = recentTickers.map(ticker => ({
