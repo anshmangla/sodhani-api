@@ -45,7 +45,7 @@ async function fetchLevelRows(column: LevelColumn, code: string): Promise<PeerLe
   const result = await pool.query(
     `SELECT DISTINCT ON (cs."FinInstrmId")
             COALESCE(cs."TckrSymb", cs."FinInstrmId"::text) AS symbol,
-            cs."FinInstrmNm" AS name,
+            COALESCE(NULLIF(cs."FinInstrmNm", ''), NULLIF(ci.company_name, '')) AS name,
             sm.cmp, sm.pe, sm.mkt_cap, sm.profit_var
      FROM company_sectors ci
      JOIN company_stock cs ON
@@ -66,7 +66,11 @@ router.get('/company/:symbol/peers', asyncHandler(async (req, res) => {
   const stockResult = await pool.query(
     `SELECT "FinInstrmId", "TckrSymb", "FinInstrmNm"
      FROM company_stock
-     WHERE UPPER("TckrSymb") = UPPER($1) OR "FinInstrmId"::text = $1
+     WHERE 
+       UPPER("TckrSymb") = UPPER($1) OR 
+       UPPER("TckrSymb") = UPPER($1 || '.BO') OR 
+       UPPER("TckrSymb") = UPPER($1 || '.NS') OR 
+       "FinInstrmId"::text = $1
      LIMIT 1`,
     [symbol]
   );

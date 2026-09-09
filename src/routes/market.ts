@@ -254,6 +254,7 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
             hp_latest."true_high" AS "HighPric",
             hp_latest."true_low" AS "LowPric",
             hp_latest."true_close" AS "ClosePric",
+              hp_prev."prev_close" AS "PrevClosePric",
             (hp_latest."true_close"::float - hp_prev."prev_close"::float) AS "ChangeVal",
             CASE WHEN hp_prev."prev_close"::float > 0
               THEN ((hp_latest."true_close"::float - hp_prev."prev_close"::float) / hp_prev."prev_close"::float) * 100
@@ -285,8 +286,11 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
            FROM historical_prices
            WHERE "FinInstrmId" = cs."FinInstrmId"
          )
-       ORDER BY hp2.record_date DESC
-       LIMIT 1
+       ORDER BY 
+           DATE(hp2.record_date) DESC,
+           CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
+           hp2.record_date DESC
+         LIMIT 1
      ) hp_prev ON true
      WHERE UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1
      LIMIT 1`,
@@ -334,6 +338,7 @@ router.get('/quotes', asyncHandler(async (req, res) => {
             hp_latest."true_high" AS "HighPric",
             hp_latest."true_low" AS "LowPric",
             hp_latest."true_close" AS "ClosePric",
+              hp_prev."prev_close" AS "PrevClosePric",
             (hp_latest."true_close"::float - hp_prev."prev_close"::float) AS "ChangeVal",
             CASE WHEN hp_prev."prev_close"::float > 0
               THEN ((hp_latest."true_close"::float - hp_prev."prev_close"::float) / hp_prev."prev_close"::float) * 100
@@ -365,8 +370,11 @@ router.get('/quotes', asyncHandler(async (req, res) => {
            FROM historical_prices
            WHERE "FinInstrmId" = cs."FinInstrmId"
          )
-       ORDER BY hp2.record_date DESC
-       LIMIT 1
+       ORDER BY 
+           DATE(hp2.record_date) DESC,
+           CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
+           hp2.record_date DESC
+         LIMIT 1
      ) hp_prev ON true
      WHERE UPPER(cs."TckrSymb") = ANY($1) OR cs."FinInstrmId"::text = ANY($2)`,
     [upperCodes, codes]
@@ -412,7 +420,9 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
       // Same shape as the other ranges (sargable >= against an interval) so
       // this can use an index range scan instead of wrapping record_date in
       // DATE() on both sides, which forced a full scan of the symbol's history.
-      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '1 day'`;
+      // We use > instead of >= to strictly exclude the 00:00:00 midnight tick 
+      // (Yahoo Finance EOD data), so 1d chart ONLY shows true intraday ticks.
+      timeFilter = `AND hp."record_date" > DATE_TRUNC('day', (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId"))`;
     } else if (range === '1w') {
       timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '7 days'`;
     } else if (range === '1m') {
@@ -675,7 +685,7 @@ router.get('/screener', asyncHandler(async (req, res) => {
   const baseCte = `
     WITH base AS (
       SELECT DISTINCT ON (cs."FinInstrmId")
-        cs."FinInstrmId", cs."TckrSymb", cs."FinInstrmNm",
+        cs."FinInstrmId", cs."TckrSymb", COALESCE(NULLIF(cs."FinInstrmNm", ''), NULLIF(ci.company_name, '')) AS "FinInstrmNm",
         ci.sector_name, ci.industry_name, ci.leaf_name, ci.leaf_code,
         sm.cmp, sm.pe, sm.mkt_cap, sm.div_yld, sm.np_qtr, sm.profit_var, sm.sales_qtr, sm.sales_var, sm.roce
       FROM company_stock cs
@@ -983,16 +993,30 @@ router.get('/company/:symbol/:concern', asyncHandler(async (req, res) => {
 router.get('/metrics/:symbol', asyncHandler(async (req, res) => {
   const symbol = req.params.symbol;
   
+  const csResult = await pool.query(
+    `SELECT "FinInstrmId", "TckrSymb" FROM company_stock 
+     WHERE UPPER("TckrSymb") = UPPER($1 || '.BO') 
+        OR UPPER("TckrSymb") = UPPER($1 || '.NS') 
+        OR UPPER("TckrSymb") = UPPER($1) 
+        OR "FinInstrmId"::text = $1 
+     LIMIT 1`, [symbol]
+  );
+  
+  let finId = '';
+  let tckrSymb = symbol;
+  if (csResult.rows.length > 0) {
+     finId = csResult.rows[0].FinInstrmId ? csResult.rows[0].FinInstrmId.toString() : '';
+     tckrSymb = csResult.rows[0].TckrSymb.replace(/\.(NS|BO)$/i, '');
+  }
+
   const result = await pool.query(
     `SELECT sm.* 
      FROM stock_metrics sm
-     LEFT JOIN company_stock cs ON 
-        (sm.symbol = cs."FinInstrmId"::text OR UPPER(sm.symbol) = UPPER(cs."TckrSymb"))
      WHERE UPPER(sm.symbol) = UPPER($1) 
-        OR UPPER(cs."TckrSymb") = UPPER($1) 
-        OR cs."FinInstrmId"::text = $1
+        OR sm.symbol = $2
+        OR UPPER(sm.symbol) = UPPER($3)
      LIMIT 1`,
-    [symbol]
+    [symbol, finId, tckrSymb]
   );
 
   if (result.rows.length === 0) {
@@ -1178,10 +1202,11 @@ router.get('/indices/:code/history', asyncHandler(async (req, res) => {
      FROM ${source.historyTable}
      WHERE "${source.historyIdCol}" = $1
        AND ${sessionFilter}
-       AND "record_time" >= (
-             SELECT MAX("record_time") FROM ${source.historyTable}
-             WHERE "${source.historyIdCol}" = $1 AND ${sessionFilter}
-           ) - INTERVAL '${cfg.interval}'
+       AND (
+         ('${range}' = '1d' AND "record_time" > DATE_TRUNC('day', (SELECT MAX("record_time") FROM ${source.historyTable} WHERE "${source.historyIdCol}" = $1 AND ${sessionFilter})))
+         OR 
+         ('${range}' != '1d' AND "record_time" >= (SELECT MAX("record_time") FROM ${source.historyTable} WHERE "${source.historyIdCol}" = $1 AND ${sessionFilter}) - INTERVAL '${cfg.interval}')
+       )
      ORDER BY "record_time" DESC
      LIMIT $2`,
     [resolvedCode, limit]
