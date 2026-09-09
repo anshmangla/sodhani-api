@@ -1,6 +1,7 @@
 import { unlink } from 'fs/promises';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { randomUUID } from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import multer, { MulterError } from 'multer';
 
@@ -17,11 +18,13 @@ const EXT_BY_MIME: Record<string, string> = {
 // Auth middleware runs before this in the route chain, so req.authRaId /
 // req.authUserId is already set when multer picks the destination filename.
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => {
-    const ownerId = req.authRaId ?? req.authUserId ?? 'unknown';
-    const ext = EXT_BY_MIME[file.mimetype];
-    cb(null, `${ownerId}-${Date.now()}${ext}`);
+  destination: (_req, _file, cb) => {
+    mkdirSync(UPLOAD_DIR, { recursive: true });
+    cb(null, UPLOAD_DIR);
+  },
+  filename: (_req, file, cb) => {
+    const ext = EXT_BY_MIME[file.mimetype] || '.jpg';
+    cb(null, `${randomUUID()}${ext}`);
   },
 });
 

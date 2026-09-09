@@ -36,8 +36,15 @@ function readMappings(mappingsPath: string): ExchangeCodeMappings {
   }
 }
 
+const VALID_SYMBOL_REGEX = /^[A-Za-z0-9._\-&]{1,32}$/;
+
 function findDirCaseInsensitive(splitDir: string, name: string): string | null {
-  const target = path.join(splitDir, name);
+  if (!name || !VALID_SYMBOL_REGEX.test(name)) return null;
+
+  const base = path.resolve(splitDir);
+  const target = path.resolve(base, name);
+  if (target !== base && !target.startsWith(base + path.sep)) return null;
+
   if (fs.existsSync(target) && fs.statSync(target).isDirectory()) return target;
 
   let entries: string[];
@@ -48,13 +55,19 @@ function findDirCaseInsensitive(splitDir: string, name: string): string | null {
   }
   const lowerTarget = name.toLowerCase();
   const match = entries.find((e) => e.toLowerCase() === lowerTarget);
-  return match ? path.join(splitDir, match) : null;
+  if (!match) return null;
+
+  const matchedTarget = path.resolve(base, match);
+  if (matchedTarget !== base && !matchedTarget.startsWith(base + path.sep)) return null;
+  return matchedTarget;
 }
 
 // Mirrors the exact/case-insensitive-then-BSE<->NSE-mapping fallback chain
 // `searchStaticStock` in src/routes/market.ts uses for output/output_consolidated,
 // but resolves a company *directory* under output_split/ instead of a file.
 function resolveCompanyDir(splitDir: string, mappingsPath: string, query: string): string | null {
+  if (!query || !VALID_SYMBOL_REGEX.test(query)) return null;
+
   const direct = findDirCaseInsensitive(splitDir, query);
   if (direct) return direct;
 
@@ -80,12 +93,27 @@ export type GetCompanyConcernResult =
   | { status: 'concern_not_found' };
 
 export function getCompanyConcern(opts: GetCompanyConcernOptions): GetCompanyConcernResult {
+  if (!opts.symbolQuery || !VALID_SYMBOL_REGEX.test(opts.symbolQuery)) {
+    return { status: 'company_not_found' };
+  }
+
   const companyDir = resolveCompanyDir(opts.splitDir, opts.mappingsPath, opts.symbolQuery);
   if (!companyDir) return { status: 'company_not_found' };
 
   const filePath = path.join(companyDir, concernFilename(opts.concern, opts.variant));
+  const baseDir = path.resolve(companyDir);
+  const resolvedPath = path.resolve(baseDir, concernFilename(opts.concern, opts.variant));
+  if (resolvedPath !== baseDir && !resolvedPath.startsWith(baseDir + path.sep)) {
+    return { status: 'concern_not_found' };
+  }
+
   if (!fs.existsSync(filePath)) return { status: 'concern_not_found' };
 
-  const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  return { status: 'ok', data };
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return { status: 'ok', data };
+  } catch (err) {
+    console.error(`[companySplitDataService] Failed to parse JSON for ${opts.symbolQuery}/${opts.concern}:`, err);
+    return { status: 'concern_not_found' };
+  }
 }

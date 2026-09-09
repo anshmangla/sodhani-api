@@ -15,6 +15,11 @@ types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)));
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+  statement_timeout: 10000,
+  idle_in_transaction_session_timeout: 10000,
 });
 
 pool.on('error', (err) => {

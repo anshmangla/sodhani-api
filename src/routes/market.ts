@@ -1,4 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import { pool } from '../db/pool';
 import { lttb } from '../utils/lttb';
 import {
@@ -9,6 +11,8 @@ import {
 } from '../services/companySplitDataService';
 
 const router = Router();
+
+const VALID_QUERY_REGEX = /^[A-Za-z0-9._\-&]{1,32}$/;
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -22,37 +26,52 @@ function clampLimit(raw: unknown, def: number, max: number): number {
   return Math.min(n, max);
 }
 
-const fs = require('fs').promises;
-const path = require('path');
 const outputDir = process.env.STATIC_JSON_DIR || '/opt/sodhaniScrap/output';
 const consolidatedDir = process.env.CONSOLIDATED_JSON_DIR || '/opt/sodhaniScrap/output_consolidated';
 
-const checkFileExists = async (filePath: string) => {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
+let cachedFileNames = new Set<string>();
+let lastFileScanTime = 0;
+const FILE_SCAN_TTL_MS = 60 * 1000;
+
+async function getAvailableStockFiles(): Promise<Set<string>> {
+  const now = Date.now();
+  if (cachedFileNames.size > 0 && now - lastFileScanTime < FILE_SCAN_TTL_MS) {
+    return cachedFileNames;
   }
-};
+  const set = new Set<string>();
+  for (const dir of [outputDir, consolidatedDir]) {
+    try {
+      const files = await fs.readdir(dir);
+      for (const file of files) {
+        if (file.endsWith('.json')) {
+          set.add(file.slice(0, -5).toLowerCase());
+        }
+      }
+    } catch {
+      // directory missing or unreadable
+    }
+  }
+  cachedFileNames = set;
+  lastFileScanTime = now;
+  return set;
+}
 
 const hasJsonForStock = async (scripCd: string): Promise<boolean> => {
-  if (await checkFileExists(path.join(outputDir, `${scripCd}.json`))) return true;
-  if (await checkFileExists(path.join(consolidatedDir, `${scripCd}.json`))) return true;
+  if (!scripCd) return false;
+  const lowerCd = String(scripCd).toLowerCase();
+  const fileSet = await getAvailableStockFiles();
+  if (fileSet.has(lowerCd)) return true;
 
   const stockResult = await pool.query(
     `SELECT "TckrSymb" FROM company_stock WHERE "FinInstrmId"::text = $1 LIMIT 1`,
     [scripCd]
   );
-  
-  if (stockResult.rows.length > 0) {
-    const ticker = stockResult.rows[0].TckrSymb;
-    if (ticker) {
-      if (await checkFileExists(path.join(outputDir, `${ticker}.json`))) return true;
-      if (await checkFileExists(path.join(consolidatedDir, `${ticker}.json`))) return true;
-    }
+
+  if (stockResult.rows.length > 0 && stockResult.rows[0].TckrSymb) {
+    const tickerLower = String(stockResult.rows[0].TckrSymb).toLowerCase();
+    if (fileSet.has(tickerLower)) return true;
   }
-  
+
   return false;
 };
 
@@ -386,6 +405,10 @@ router.get('/quotes', asyncHandler(async (req, res) => {
 // GET /api/history/:symbol?range=1m&chartType=line
 router.get('/history/:symbol', asyncHandler(async (req, res) => {
   const { symbol } = req.params;
+  if (!symbol || !VALID_QUERY_REGEX.test(symbol)) {
+    res.status(400).json({ error: 'Invalid symbol parameter' });
+    return;
+  }
   
   const chartType = String(req.query.chartType || 'candlestick').toLowerCase();
   if (!['line', 'candlestick'].includes(chartType)) {
@@ -395,17 +418,28 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
   let rawRange = String(req.query.range || req.query.query || '1m').toLowerCase();
   
   // Custom date ranges
-  const startDate = req.query.start_date ? String(req.query.start_date) : null;
-  const endDate = req.query.end_date ? String(req.query.end_date) : null;
+  const startDate = req.query.start_date ? String(req.query.start_date).trim() : null;
+  const endDate = req.query.end_date ? String(req.query.end_date).trim() : null;
 
   let timeFilter = '';
   let durationDays = 30; // default for 1m
   let range = rawRange;
 
-  if (startDate && endDate) {
+  const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+  if (startDate || endDate) {
+    if (!startDate || !endDate || !ISO_DATE_REGEX.test(startDate) || !ISO_DATE_REGEX.test(endDate)) {
+      res.status(400).json({ error: 'start_date and end_date must both be valid ISO dates (YYYY-MM-DD)' });
+      return;
+    }
+    const startTs = new Date(startDate).getTime();
+    const endTs = new Date(endDate).getTime();
+    if (Number.isNaN(startTs) || Number.isNaN(endTs) || startTs > endTs) {
+      res.status(400).json({ error: 'start_date must be less than or equal to end_date' });
+      return;
+    }
     range = 'custom';
     timeFilter = `AND hp."record_date" >= $3 AND hp."record_date" <= $4`;
-    durationDays = (new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 3600 * 24);
+    durationDays = (endTs - startTs) / (1000 * 3600 * 24);
   } else {
     // Determine range and rough duration for bucketing strategy
     if (['d', '1d'].includes(rawRange)) { range = '1d'; durationDays = 1; }
@@ -417,11 +451,6 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
     else { range = '1m'; durationDays = 30; } // default fallback
 
     if (range === '1d') {
-      // Same shape as the other ranges (sargable >= against an interval) so
-      // this can use an index range scan instead of wrapping record_date in
-      // DATE() on both sides, which forced a full scan of the symbol's history.
-      // We use > instead of >= to strictly exclude the 00:00:00 midnight tick 
-      // (Yahoo Finance EOD data), so 1d chart ONLY shows true intraday ticks.
       timeFilter = `AND hp."record_date" > DATE_TRUNC('day', (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId"))`;
     } else if (range === '1w') {
       timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '7 days'`;
@@ -434,7 +463,8 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
     }
   }
 
-  const limit = clampLimit(req.query.limit, 10000, 50000);
+  // M-01.3: clamp ceiling to 5,000 rows
+  const limit = clampLimit(req.query.limit, 1000, 5000);
   const downsample = 100;
   
   let sql = '';
@@ -702,7 +732,7 @@ router.get('/research-reports', asyncHandler(async (req, res) => {
 
 // GET /api/screener?page=1&limit=25&industry=Pharmaceuticals&sort_by=mkt_cap&order=desc
 router.get('/screener', asyncHandler(async (req, res) => {
-  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const page = Math.min(Math.max(1, parseInt(req.query.page as string) || 1), 1000);
   const limit = clampLimit(req.query.limit, 25, 100);
   const offset = (page - 1) * limit;
 
@@ -824,12 +854,17 @@ router.get('/technical/:symbol', asyncHandler(async (req, res) => {
 
 // Helper for static stock data search with BSE -> NSE fallback
 const searchStaticStock = async (dir: string, query: string) => {
-  const fs = require('fs').promises;
-  const path = require('path');
+  if (!query || !VALID_QUERY_REGEX.test(query)) return null;
+
+  const baseDir = path.resolve(dir);
 
   const tryReadFile = async (directory: string, filename: string) => {
     try {
-      const filePath = path.join(directory, filename);
+      const base = path.resolve(directory);
+      const filePath = path.resolve(base, filename);
+      if (filePath !== base && !filePath.startsWith(base + path.sep)) {
+        return null;
+      }
       const data = await fs.readFile(filePath, 'utf-8');
       return JSON.parse(data);
     } catch (e) {
@@ -838,6 +873,7 @@ const searchStaticStock = async (dir: string, query: string) => {
   };
 
   const findFileCaseInsensitive = async (directory: string, targetBase: string) => {
+    if (!targetBase || !VALID_QUERY_REGEX.test(targetBase)) return null;
     try {
       const files = await fs.readdir(directory);
       const targetLower = targetBase.toLowerCase();
@@ -879,7 +915,7 @@ const searchStaticStock = async (dir: string, query: string) => {
       const nseSymbol = bseToNse[upperQuery];
 
       // Try BSE code if it was an NSE ticker
-      if (bseCode) {
+      if (bseCode && VALID_QUERY_REGEX.test(bseCode)) {
         const bseCandidates = [bseCode, `${bseCode}.json`];
         for (const filename of bseCandidates) {
           if (data) break;
@@ -889,7 +925,7 @@ const searchStaticStock = async (dir: string, query: string) => {
       }
 
       // Try NSE ticker if it was a BSE code
-      if (!data && nseSymbol) {
+      if (!data && nseSymbol && VALID_QUERY_REGEX.test(nseSymbol)) {
         const nseCandidates = [nseSymbol, `${nseSymbol}.json`];
         for (const filename of nseCandidates) {
           if (data) break;
@@ -908,55 +944,50 @@ const searchStaticStock = async (dir: string, query: string) => {
 // GET /api/static-stock?query=500325
 router.get('/static-stock', asyncHandler(async (req, res) => {
   const query = req.query.query ? String(req.query.query).trim() : '';
-  if (!query) {
-    res.status(400).json({ error: 'Query parameter "query" (stock name or number) is required' });
+  if (!query || !VALID_QUERY_REGEX.test(query)) {
+    res.status(400).json({ error: 'Query parameter "query" must be a valid stock symbol or code' });
     return;
   }
 
   const outputDir = process.env.STATIC_JSON_DIR || '/opt/sodhaniScrap/output';
   let data = await searchStaticStock(outputDir, query);
   
-  let fallbackError = null;
-  let fallbackDebug: any = null;
   if (!data) {
     try {
       const dbRes = await pool.query(
         `SELECT "FinInstrmId", "TckrSymb" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
         [query]
       );
-      fallbackDebug = { rowsFound: dbRes.rows.length };
       if (dbRes.rows.length > 0) {
         const row = dbRes.rows[0];
         const rawId = row.FinInstrmId ?? row.fininstrmid ?? Object.values(row)[0];
-        fallbackDebug.rawId = rawId;
         if (rawId) {
           const finId = rawId.toString();
-          fallbackDebug.finId = finId;
-          data = await searchStaticStock(outputDir, finId);
-          if (!data && row.TckrSymb) {
+          if (VALID_QUERY_REGEX.test(finId)) {
+            data = await searchStaticStock(outputDir, finId);
+          }
+          if (!data && row.TckrSymb && VALID_QUERY_REGEX.test(row.TckrSymb)) {
             data = await searchStaticStock(outputDir, row.TckrSymb);
           }
-          fallbackDebug.dataFound = !!data;
         }
       }
     } catch (e) {
       console.error("Database fallback failed:", e);
-      fallbackError = String(e);
     }
   }
 
   if (data) {
     res.json(data);
   } else {
-    res.status(404).json({ error: `Static JSON not found for '${query}'`, fallbackError, fallbackDebug });
+    res.status(404).json({ error: `Static JSON not found for '${query}'` });
   }
 }));
 
 // GET /api/static-stock-consolidated?query=500325
 router.get('/static-stock-consolidated', asyncHandler(async (req, res) => {
   const query = req.query.query ? String(req.query.query).trim() : '';
-  if (!query) {
-    res.status(400).json({ error: 'Query parameter "query" (stock name or number) is required' });
+  if (!query || !VALID_QUERY_REGEX.test(query)) {
+    res.status(400).json({ error: 'Query parameter "query" must be a valid stock symbol or code' });
     return;
   }
 
@@ -976,8 +1007,10 @@ router.get('/static-stock-consolidated', asyncHandler(async (req, res) => {
         const rawId = row.FinInstrmId ?? row.fininstrmid ?? Object.values(row)[0];
         if (rawId) {
           const finId = rawId.toString();
-          data = await searchStaticStock(consolidatedDir, finId);
-          if (!data && row.TckrSymb) {
+          if (VALID_QUERY_REGEX.test(finId)) {
+            data = await searchStaticStock(consolidatedDir, finId);
+          }
+          if (!data && row.TckrSymb && VALID_QUERY_REGEX.test(row.TckrSymb)) {
             data = await searchStaticStock(consolidatedDir, row.TckrSymb);
           }
         }
@@ -1393,79 +1426,6 @@ router.get('/indices/:code/constituents', asyncHandler(async (req, res) => {
     count: result.rows.length,
     constituents: result.rows,
   });
-}));
-
-// GET /api/search-index
-// Returns a unified search index for the frontend (Companies and Industries), ranked dynamically by market cap.
-router.get('/search-index', asyncHandler(async (req, res) => {
-  // Fetch companies
-  //
-  // No UPPER() here: TckrSymb/fin_instrm_id/symbol are already 100%
-  // uppercase in this data (verified directly against production). UPPER()
-  // on either side of a join defeats Postgres's ability to use the primary
-  // key indexes on company_stock/stock_metrics, forcing a nested-loop scan
-  // per company_sectors row against every company_stock/stock_metrics row -
-  // measured as catastrophically slow (multi-second) for the /api/screener
-  // and /api/company/:symbol/peers endpoints that had the same pattern.
-  // DISTINCT ON collapses the still-possible stock_metrics fan-out (a
-  // ticker-keyed and a numeric-BSE-code-keyed row for the same company)
-  // back to one row per company_sectors entry.
-  const companyQuery = `
-    SELECT DISTINCT ON (c.fin_instrm_id)
-      c.fin_instrm_id as "code",
-      c.company_name as "label",
-      c.leaf_name as "leaf",
-      sm.mkt_cap as "mkt_cap"
-    FROM company_sectors c
-    LEFT JOIN company_stock cs ON cs."FinInstrmId"::text = c.fin_instrm_id OR cs."TckrSymb" = c.fin_instrm_id
-    LEFT JOIN stock_metrics sm ON sm.symbol = cs."FinInstrmId"::text OR sm.symbol = cs."TckrSymb"
-    WHERE c.company_name IS NOT NULL
-    ORDER BY c.fin_instrm_id, sm.mkt_cap DESC NULLS LAST
-  `;
-  const companyRows = await pool.query(companyQuery);
-
-  // Fetch industries
-  const industryQuery = `
-    SELECT 
-      industry_code as "code", 
-      industry_name as "name", 
-      sector_name as "sector",
-      COUNT(*) as "count"
-    FROM company_sectors
-    WHERE industry_code IS NOT NULL AND industry_name IS NOT NULL
-    GROUP BY industry_code, industry_name, sector_name
-  `;
-  const industryRows = await pool.query(industryQuery);
-
-  // Map and sort companies
-  const companies = companyRows.rows.map(r => ({
-    kind: "Company",
-    label: r.label,
-    meta: `${r.code} • ${r.leaf || 'Unknown'}`,
-    href: `/company/${r.code}`,
-    code: r.code,
-    mkt_cap: parseFloat(r.mkt_cap || 0)
-  })).sort((a, b) => b.mkt_cap - a.mkt_cap).map((c, i) => ({
-    kind: c.kind,
-    label: c.label,
-    meta: c.meta,
-    href: c.href,
-    code: c.code,
-    rank: i
-  }));
-
-  // Map industries
-  const industries = industryRows.rows.map(r => ({
-    kind: "Industry",
-    label: r.name,
-    meta: `${r.sector} / ${r.name}`,
-    href: `/market/${r.code}`,
-    code: r.code,
-    count: parseInt(r.count, 10),
-    rank: -parseInt(r.count, 10)
-  }));
-
-  res.json([...companies, ...industries]);
 }));
 
 export default router;

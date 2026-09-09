@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import path from 'path';
+import { globalLimiter } from './middleware/rateLimiter';
 import marketRouter from './routes/market';
 import peersRouter from './routes/peers';
 import authRouter from './routes/auth';
@@ -15,6 +17,9 @@ import watchlistRouter from './routes/watchlist';
 
 export const app = express();
 
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
 const allowedOrigins = [
   'https://safedge.in',
   'https://www.safedge.in',
@@ -24,18 +29,26 @@ const allowedOrigins = [
   'http://localhost:3000'       
 ];
 
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+
 app.use(cors({
   origin: allowedOrigins,
   credentials: true
 }));
-app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
-app.use(express.json());
+
+app.use('/api/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }));
+app.use(express.json({ limit: '64kb' }));
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+
+// Global rate limiter on all /api routes (100 req/min per IP)
+app.use('/api', globalLimiter);
 
 // peersRouter must be mounted before marketRouter: marketRouter's
 // GET /company/:symbol/:concern is a wildcard that would otherwise swallow
@@ -54,6 +67,25 @@ app.use('/api/watchlist', watchlistRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
+});
+
+// Postgres error-code mapping middleware (M-02, M-03)
+app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err && typeof err === 'object' && 'code' in err) {
+    if (err.code === '22P02' || err.code === '22007' || err.code === '22003') {
+      res.status(400).json({ error: 'Invalid parameter format or value out of range' });
+      return;
+    }
+    if (err.code === '23505') {
+      res.status(409).json({ error: 'Resource conflict or duplicate entry' });
+      return;
+    }
+    if (err.code === '23503') {
+      res.status(400).json({ error: 'Referenced resource does not exist' });
+      return;
+    }
+  }
+  next(err);
 });
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

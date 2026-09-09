@@ -20,7 +20,20 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
 router.use(requireRaAuth);
 
 router.post('/linked-account', asyncHandler(async (req, res) => {
+  const existing = await pool.query(
+    'SELECT razorpay_account_id, onboarding_status FROM research_analysts WHERE id = $1',
+    [req.authRaId]
+  );
+  if (existing.rows[0]?.razorpay_account_id && existing.rows[0]?.onboarding_status === 'active') {
+    res.status(400).json({ error: 'Linked account already exists and is active' });
+    return;
+  }
+
   const { email, phone, legal_business_name, business_type, contact_name, profile, legal_info } = req.body ?? {};
+  if (!email || !phone || !legal_business_name || !contact_name) {
+    res.status(400).json({ error: 'email, phone, legal_business_name, and contact_name are required' });
+    return;
+  }
 
   try {
     const account = await createLinkedAccount({

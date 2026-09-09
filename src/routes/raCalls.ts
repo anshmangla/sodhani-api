@@ -13,10 +13,16 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
 }
 
 const VALID_RECOMMENDATIONS = ['Buy', 'Hold', 'Sell'];
+const SCRIP_CODE_REGEX = /^[A-Za-z0-9._\-&]{1,32}$/;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isValidUuid(id: string): boolean {
+  return UUID_REGEX.test(id);
+}
 
 // GET /api/ra/companies?search=
 router.get('/companies', asyncHandler(async (req, res) => {
-  const search = typeof req.query.search === 'string' ? req.query.search : '';
+  const search = typeof req.query.search === 'string' ? req.query.search.slice(0, 100) : '';
   const companies = await searchCompanies(search, 20);
   res.status(200).json({ companies });
 }));
@@ -37,20 +43,20 @@ router.post('/calls', requireRaAuth, asyncHandler(async (req, res) => {
     volume_at_publish,
   } = req.body ?? {};
 
-  if (typeof scrip_code !== 'string' || scrip_code.trim() === '') {
-    res.status(400).json({ error: 'scrip_code is required' });
+  if (typeof scrip_code !== 'string' || !SCRIP_CODE_REGEX.test(scrip_code.trim())) {
+    res.status(400).json({ error: 'Valid scrip_code is required (alphanumeric, up to 32 characters)' });
     return;
   }
-  if (typeof company_name !== 'string' || company_name.trim() === '') {
-    res.status(400).json({ error: 'company_name is required' });
+  if (typeof company_name !== 'string' || company_name.trim().length === 0 || company_name.length > 255) {
+    res.status(400).json({ error: 'company_name is required (up to 255 characters)' });
     return;
   }
   if (typeof recommendation !== 'string' || !VALID_RECOMMENDATIONS.includes(recommendation)) {
     res.status(400).json({ error: "recommendation must be one of 'Buy', 'Hold', 'Sell'" });
     return;
   }
-  if (typeof target_price !== 'number' || !Number.isFinite(target_price)) {
-    res.status(400).json({ error: 'target_price is required and must be a number' });
+  if (typeof target_price !== 'number' || !Number.isFinite(target_price) || target_price <= 0 || target_price > 10000000) {
+    res.status(400).json({ error: 'target_price is required and must be a positive number' });
     return;
   }
 
@@ -58,8 +64,8 @@ router.post('/calls', requireRaAuth, asyncHandler(async (req, res) => {
 
   let pricePaise: number | null = null;
   if (isPaid) {
-    if (typeof price_paise !== 'number' || !Number.isFinite(price_paise) || price_paise <= 0) {
-      res.status(400).json({ error: 'price_paise is required and must be a positive number when is_paid is true' });
+    if (typeof price_paise !== 'number' || !Number.isInteger(price_paise) || price_paise < 100 || price_paise > 10000000) {
+      res.status(400).json({ error: 'price_paise is required and must be an integer between 100 and 10000000 when is_paid is true' });
       return;
     }
     pricePaise = price_paise;
@@ -67,15 +73,15 @@ router.post('/calls', requireRaAuth, asyncHandler(async (req, res) => {
     pricePaise = null;
   }
 
-  const stopLoss = typeof stop_loss === 'number' && Number.isFinite(stop_loss) ? stop_loss : null;
+  const stopLoss = typeof stop_loss === 'number' && Number.isFinite(stop_loss) && stop_loss > 0 && stop_loss <= 10000000 ? stop_loss : null;
   const currentPriceAtPublish =
-    typeof current_price_at_publish === 'number' && Number.isFinite(current_price_at_publish)
+    typeof current_price_at_publish === 'number' && Number.isFinite(current_price_at_publish) && current_price_at_publish > 0
       ? current_price_at_publish
       : null;
   const volumeAtPublish =
-    typeof volume_at_publish === 'number' && Number.isInteger(volume_at_publish) ? volume_at_publish : null;
-  const buyingRange = typeof buying_range === 'string' ? buying_range : null;
-  const holdingPeriod = typeof holding_period === 'string' ? holding_period : null;
+    typeof volume_at_publish === 'number' && Number.isInteger(volume_at_publish) && volume_at_publish >= 0 ? volume_at_publish : null;
+  const buyingRange = typeof buying_range === 'string' && buying_range.length <= 100 ? buying_range : null;
+  const holdingPeriod = typeof holding_period === 'string' && holding_period.length <= 100 ? holding_period : null;
 
   const result = await pool.query(
     `INSERT INTO research_calls
@@ -86,8 +92,8 @@ router.post('/calls', requireRaAuth, asyncHandler(async (req, res) => {
      RETURNING *`,
     [
       req.authRaId,
-      scrip_code,
-      company_name,
+      scrip_code.trim(),
+      company_name.trim(),
       recommendation,
       currentPriceAtPublish,
       volumeAtPublish,
@@ -168,10 +174,14 @@ router.get('/dashboard/earnings', requireRaAuth, asyncHandler(async (req, res) =
 // POST /api/ra/calls/:id/comments
 router.post('/calls/:id/comments', requireRaAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
+  if (!isValidUuid(id)) {
+    res.status(404).json({ error: 'Call not found' });
+    return;
+  }
   const { body } = req.body ?? {};
 
-  if (typeof body !== 'string' || body.trim() === '') {
-    res.status(400).json({ error: 'body is required' });
+  if (typeof body !== 'string' || body.trim().length === 0 || body.trim().length > 2000) {
+    res.status(400).json({ error: 'body is required (between 1 and 2000 characters)' });
     return;
   }
 
@@ -187,7 +197,7 @@ router.post('/calls/:id/comments', requireRaAuth, asyncHandler(async (req, res) 
 
   const result = await pool.query(
     'INSERT INTO call_comments (call_id, ra_id, body) VALUES ($1, $2, $3) RETURNING *',
-    [id, req.authRaId, body]
+    [id, req.authRaId, body.trim()]
   );
 
   res.status(201).json({ comment: result.rows[0] });
@@ -196,6 +206,10 @@ router.post('/calls/:id/comments', requireRaAuth, asyncHandler(async (req, res) 
 // GET /api/ra/calls/:id/comments
 router.get('/calls/:id/comments', requireRaAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
+  if (!isValidUuid(id)) {
+    res.status(404).json({ error: 'Call not found' });
+    return;
+  }
 
   const callResult = await pool.query('SELECT ra_id FROM research_calls WHERE id = $1', [id]);
   if (callResult.rows.length === 0) {
@@ -218,6 +232,10 @@ router.get('/calls/:id/comments', requireRaAuth, asyncHandler(async (req, res) =
 // PATCH /api/ra/calls/:id/status
 router.patch('/calls/:id/status', requireRaAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
+  if (!isValidUuid(id)) {
+    res.status(404).json({ error: 'Call not found' });
+    return;
+  }
   const { status } = req.body ?? {};
 
   if (status !== 'open' && status !== 'closed') {

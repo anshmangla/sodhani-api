@@ -15,9 +15,16 @@ function getSecret(): string {
 
 export function signRaAuthToken(raId: string, tokenVersion: number): string {
   const payload: RaAuthTokenPayload = { sub: raId, token_version: tokenVersion };
-  return jwt.sign(payload, getSecret(), { algorithm: 'HS256', expiresIn: '30d' });
+  return jwt.sign(payload, getSecret(), {
+    algorithm: 'HS256',
+    expiresIn: '30d',
+    issuer: 'sodhani-api',
+    audience: 'sodhani-ra',
+  });
 }
 
 export function verifyRaAuthToken(token: string): RaAuthTokenPayload {
-  return jwt.verify(token, getSecret(), { algorithms: ['HS256'] }) as RaAuthTokenPayload;
+  return jwt.verify(token, getSecret(), {
+    algorithms: ['HS256'],
+  }) as RaAuthTokenPayload;
 }

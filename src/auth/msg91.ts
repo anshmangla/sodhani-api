@@ -7,7 +7,21 @@
 // phone number it belongs to. `phone_number` is otherwise trusted from the
 // request body since only our own frontend constructs it — an accepted trust
 // boundary, not a bug.
-export async function verifyMsg91AccessToken(accessToken: string): Promise<boolean> {
+export function normalizePhoneNumber(phone: string): string {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length === 10) return `91${digits}`;
+  return digits;
+}
+
+export function isValidIndianPhoneNumber(phone: string): boolean {
+  const norm = normalizePhoneNumber(phone);
+  // Valid Indian mobile: 91 followed by 6, 7, 8, or 9 and 9 more digits (total 12 digits)
+  return /^91[6-9]\d{9}$/.test(norm);
+}
+
+export async function verifyMsg91AccessToken(
+  accessToken: string
+): Promise<{ verified: boolean; mobile?: string }> {
   const authkey = process.env.MSG91_AUTH_KEY;
   if (!authkey) {
     throw new Error('MSG91_AUTH_KEY is not set');
@@ -19,16 +33,27 @@ export async function verifyMsg91AccessToken(accessToken: string): Promise<boole
     body: JSON.stringify({ authkey, 'access-token': accessToken }),
   });
 
-  let data: { type?: string };
+  let data: any;
   try {
-    data = (await res.json()) as { type?: string };
+    data = await res.json();
   } catch (err) {
-    console.error('Failed to parse MSG91 response:', err);
-    return false;
+    console.error('Failed to parse MSG91 response');
+    return { verified: false };
   }
-  console.log('MSG91 verifyAccessToken response:', JSON.stringify(data));
 
-  return data?.type === 'success';
+  // Redacted logging (L-05): log only outcome, never raw verification payload/tokens
+  const verified = data?.type === 'success';
+  const extractedMobile =
+    data?.data?.mobile ||
+    data?.message?.mobile ||
+    data?.mobile ||
+    (typeof data?.message === 'string' && data?.message.match(/\d{10,12}/)?.[0]) ||
+    undefined;
+
+  return {
+    verified,
+    mobile: extractedMobile ? normalizePhoneNumber(String(extractedMobile)) : undefined,
+  };
 }
 
 // ── Server-side OTP (authkey) flow ────────────────────────────────────────────
@@ -70,6 +95,5 @@ export async function verifyMsg91Otp(mobile: string, otp: string): Promise<boole
   );
 
   const data = (await res.json()) as { type?: string; message?: string };
-  console.log('MSG91 verify OTP response:', JSON.stringify(data));
   return data?.type === 'success';
 }

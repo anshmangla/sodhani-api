@@ -45,15 +45,23 @@ function isUniqueViolation(err: unknown): boolean {
   return (err as { code?: string })?.code === '23505';
 }
 
+const SYMBOL_REGEX = /^[A-Za-z0-9._\-&]{1,32}$/;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isValidUuid(id: string): boolean {
+  return UUID_REGEX.test(id);
+}
+
 async function stockExists(symbol: string): Promise<boolean> {
   const result = await pool.query(
-    'SELECT 1 FROM company_stock WHERE UPPER("TckrSymb") = UPPER($1)',
+    'SELECT 1 FROM company_stock WHERE UPPER("TckrSymb") = UPPER($1) OR "FinInstrmId"::text = $1',
     [symbol]
   );
   return result.rows.length > 0;
 }
 
 async function playlistBelongsToUser(playlistId: string, userId: string): Promise<boolean> {
+  if (!isValidUuid(playlistId)) return false;
   const result = await pool.query(
     'SELECT 1 FROM watchlist_playlists WHERE id = $1 AND user_id = $2',
     [playlistId, userId]
@@ -73,7 +81,7 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
             END AS change_percent,
             wi.created_at
      FROM watchlist_items wi
-     LEFT JOIN company_stock cs ON cs."FinInstrmId" = wi.symbol
+     LEFT JOIN company_stock cs ON (cs."FinInstrmId"::text = wi.symbol OR UPPER(cs."TckrSymb") = UPPER(wi.symbol))
      ${PRICE_LATERAL}
      WHERE wi.user_id = $1
      ORDER BY wi.created_at DESC`,
@@ -90,7 +98,25 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
     res.status(400).json({ error: 'symbol is required' });
     return;
   }
-  const normalized = symbol.trim().toUpperCase();
+  const trimmed = symbol.trim();
+  if (!SYMBOL_REGEX.test(trimmed)) {
+    res.status(400).json({ error: 'Invalid symbol format' });
+    return;
+  }
+  const normalized = trimmed.toUpperCase();
+  if (!(await stockExists(normalized))) {
+    res.status(404).json({ error: `Stock '${normalized}' does not exist` });
+    return;
+  }
+
+  const countResult = await pool.query(
+    'SELECT count(*)::int AS count FROM watchlist_items WHERE user_id = $1',
+    [req.authUserId]
+  );
+  if (countResult.rows[0].count >= 500) {
+    res.status(400).json({ error: 'Maximum limit of 500 watchlist items reached' });
+    return;
+  }
 
   const result = await pool.query(
     `INSERT INTO watchlist_items (user_id, symbol)
@@ -104,9 +130,13 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
 // DELETE /api/watchlist/:symbol - remove a stock from the watchlist (cascades out of all playlists).
 router.delete('/:symbol', requireAuth, asyncHandler(async (req, res) => {
   const { symbol } = req.params;
+  if (!symbol || !SYMBOL_REGEX.test(symbol.trim())) {
+    res.status(400).json({ error: 'Invalid symbol format' });
+    return;
+  }
   const result = await pool.query(
     `DELETE FROM watchlist_items WHERE user_id = $1 AND UPPER(symbol) = UPPER($2)`,
-    [req.authUserId, symbol]
+    [req.authUserId, symbol.trim()]
   );
   if (result.rowCount === 0) {
     res.status(404).json({ error: `'${symbol}' is not in the watchlist` });
@@ -165,6 +195,20 @@ router.post('/playlists', requireAuth, asyncHandler(async (req, res) => {
     return;
   }
   const trimmed = name.trim();
+  if (trimmed.length > 100) {
+    res.status(400).json({ error: 'Playlist name must be at most 100 characters' });
+    return;
+  }
+
+  const countResult = await pool.query(
+    'SELECT count(*)::int AS count FROM watchlist_playlists WHERE user_id = $1',
+    [req.authUserId]
+  );
+  if (countResult.rows[0].count >= 50) {
+    res.status(400).json({ error: 'Maximum limit of 50 playlists reached' });
+    return;
+  }
+
   try {
     const posResult = await pool.query(
       'SELECT COALESCE(MAX(position), -1) + 1 AS next_position FROM watchlist_playlists WHERE user_id = $1',
@@ -192,8 +236,8 @@ router.post('/playlists', requireAuth, asyncHandler(async (req, res) => {
 // before /playlists/:id so "reorder" isn't captured as an id.
 router.patch('/playlists/reorder', requireAuth, asyncHandler(async (req, res) => {
   const { order } = req.body ?? {};
-  if (!Array.isArray(order) || order.some((id) => typeof id !== 'string')) {
-    res.status(400).json({ error: 'order must be an array of playlist ids' });
+  if (!Array.isArray(order) || order.some((id) => typeof id !== 'string' || !isValidUuid(id))) {
+    res.status(400).json({ error: 'order must be an array of playlist UUIDs' });
     return;
   }
   const ids = order as string[];
@@ -227,12 +271,20 @@ router.patch('/playlists/reorder', requireAuth, asyncHandler(async (req, res) =>
 // PATCH /api/watchlist/playlists/:id - rename a playlist. 409 on duplicate name.
 router.patch('/playlists/:id', requireAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
+  if (!isValidUuid(id)) {
+    res.status(404).json({ error: 'Playlist not found' });
+    return;
+  }
   const { name } = req.body ?? {};
   if (typeof name !== 'string' || name.trim().length === 0) {
     res.status(400).json({ error: 'name is required' });
     return;
   }
   const trimmed = name.trim();
+  if (trimmed.length > 100) {
+    res.status(400).json({ error: 'Playlist name must be at most 100 characters' });
+    return;
+  }
   if (!(await playlistBelongsToUser(id, req.authUserId!))) {
     res.status(404).json({ error: 'Playlist not found' });
     return;
@@ -257,6 +309,10 @@ router.patch('/playlists/:id', requireAuth, asyncHandler(async (req, res) => {
 // DELETE /api/watchlist/playlists/:id - delete a playlist. Watchlist items are preserved.
 router.delete('/playlists/:id', requireAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
+  if (!isValidUuid(id)) {
+    res.status(404).json({ error: 'Playlist not found' });
+    return;
+  }
   const result = await pool.query(
     'DELETE FROM watchlist_playlists WHERE id = $1 AND user_id = $2',
     [id, req.authUserId]
@@ -271,7 +327,7 @@ router.delete('/playlists/:id', requireAuth, asyncHandler(async (req, res) => {
 // GET /api/watchlist/playlists/:id/items - items in a playlist with live prices.
 router.get('/playlists/:id/items', requireAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
-  if (!(await playlistBelongsToUser(id, req.authUserId!))) {
+  if (!isValidUuid(id) || !(await playlistBelongsToUser(id, req.authUserId!))) {
     res.status(404).json({ error: 'Playlist not found' });
     return;
   }
@@ -287,7 +343,7 @@ router.get('/playlists/:id/items', requireAuth, asyncHandler(async (req, res) =>
             wi.created_at
      FROM watchlist_playlist_items wpi
      JOIN watchlist_items wi ON wi.id = wpi.watchlist_item_id
-     LEFT JOIN company_stock cs ON cs."FinInstrmId" = wi.symbol
+     LEFT JOIN company_stock cs ON (cs."FinInstrmId"::text = wi.symbol OR UPPER(cs."TckrSymb") = UPPER(wi.symbol))
      ${PRICE_LATERAL}
      WHERE wpi.playlist_id = $1
      ORDER BY wpi.position ASC, wpi.added_at ASC`,
@@ -300,20 +356,39 @@ router.get('/playlists/:id/items', requireAuth, asyncHandler(async (req, res) =>
 // the watchlist if not already present. Idempotent.
 router.post('/playlists/:id/items', requireAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
+  if (!isValidUuid(id) || !(await playlistBelongsToUser(id, req.authUserId!))) {
+    res.status(404).json({ error: 'Playlist not found' });
+    return;
+  }
   const { symbol } = req.body ?? {};
   if (typeof symbol !== 'string' || symbol.trim().length === 0) {
     res.status(400).json({ error: 'symbol is required' });
     return;
   }
-  const normalized = symbol.trim().toUpperCase();
-  if (!(await playlistBelongsToUser(id, req.authUserId!))) {
-    res.status(404).json({ error: 'Playlist not found' });
+  const trimmed = symbol.trim();
+  if (!SYMBOL_REGEX.test(trimmed)) {
+    res.status(400).json({ error: 'Invalid symbol format' });
+    return;
+  }
+  const normalized = trimmed.toUpperCase();
+  if (!(await stockExists(normalized))) {
+    res.status(404).json({ error: `Stock '${normalized}' does not exist` });
     return;
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const countResult = await client.query(
+      'SELECT count(*)::int AS count FROM watchlist_playlist_items WHERE playlist_id = $1',
+      [id]
+    );
+    if (countResult.rows[0].count >= 200) {
+      await client.query('ROLLBACK');
+      res.status(400).json({ error: 'Maximum limit of 200 items per playlist reached' });
+      return;
+    }
+
     const itemResult = await client.query(
       `INSERT INTO watchlist_items (user_id, symbol)
        VALUES ($1, $2)
@@ -354,8 +429,12 @@ router.post('/playlists/:id/items', requireAuth, asyncHandler(async (req, res) =
 // only; the stock remains in the watchlist. 404 if not in the playlist.
 router.delete('/playlists/:id/items/:symbol', requireAuth, asyncHandler(async (req, res) => {
   const { id, symbol } = req.params;
-  if (!(await playlistBelongsToUser(id, req.authUserId!))) {
+  if (!isValidUuid(id) || !(await playlistBelongsToUser(id, req.authUserId!))) {
     res.status(404).json({ error: 'Playlist not found' });
+    return;
+  }
+  if (!symbol || !SYMBOL_REGEX.test(symbol.trim())) {
+    res.status(400).json({ error: 'Invalid symbol format' });
     return;
   }
   const result = await pool.query(
@@ -365,7 +444,7 @@ router.delete('/playlists/:id/items/:symbol', requireAuth, asyncHandler(async (r
        AND wpi.watchlist_item_id = wi.id
        AND wi.user_id = $2
        AND UPPER(wi.symbol) = UPPER($3)`,
-    [id, req.authUserId, symbol]
+    [id, req.authUserId, symbol.trim()]
   );
   if (result.rowCount === 0) {
     res.status(404).json({ error: `'${symbol}' is not in this playlist` });
@@ -378,21 +457,21 @@ router.delete('/playlists/:id/items/:symbol', requireAuth, asyncHandler(async (r
 // Must be registered before /playlists/:id/items/:symbol.
 router.patch('/playlists/:id/items/reorder', requireAuth, asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { order } = req.body ?? {};
-  if (!Array.isArray(order) || order.some((s) => typeof s !== 'string')) {
-    res.status(400).json({ error: 'order must be an array of symbols' });
-    return;
-  }
-  if (!(await playlistBelongsToUser(id, req.authUserId!))) {
+  if (!isValidUuid(id) || !(await playlistBelongsToUser(id, req.authUserId!))) {
     res.status(404).json({ error: 'Playlist not found' });
     return;
   }
-  const symbols = order as string[];
+  const { order } = req.body ?? {};
+  if (!Array.isArray(order) || order.some((s) => typeof s !== 'string' || !SYMBOL_REGEX.test(s.trim()))) {
+    res.status(400).json({ error: 'order must be an array of symbols' });
+    return;
+  }
+  const symbols = order.map((s) => s.trim().toUpperCase());
   const owned = await pool.query(
     `SELECT wi.symbol FROM watchlist_playlist_items wpi
      JOIN watchlist_items wi ON wi.id = wpi.watchlist_item_id
      WHERE wpi.playlist_id = $1 AND wi.user_id = $2 AND UPPER(wi.symbol) = ANY($3)`,
-    [id, req.authUserId, symbols.map((s) => s.toUpperCase())]
+    [id, req.authUserId, symbols]
   );
   if (owned.rows.length !== symbols.length) {
     res.status(404).json({ error: 'One or more symbols are not in this playlist' });

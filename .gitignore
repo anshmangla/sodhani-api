@@ -7,4 +7,6 @@ dist/
 .superpowers/
 output/
 output_consolidated/
+output_split/
+split_checkpoint.json
 uploads/
