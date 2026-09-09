@@ -957,18 +957,26 @@ router.get('/company/:symbol/:concern', asyncHandler(async (req, res) => {
   let result = getCompanyConcern({ splitDir, mappingsPath, symbolQuery: symbol, concern, variant });
 
   // Ultimate fallback, same as /api/static-stock-consolidated: map an incoming
-  // TckrSymb back to its FinInstrmId via the live database and retry.
+  // symbol to its FinInstrmId or TckrSymb via the live database and retry.
+  // output_split/ directories are keyed inconsistently - some by numeric BSE
+  // code, some by ticker (e.g. IPOs, whose FinInstrmId/TckrSymb start out
+  // equal to the ticker before a later BSE sync re-keys FinInstrmId to the
+  // numeric code) - so both candidates must be tried, not just FinInstrmId.
   if (result.status === 'company_not_found') {
     try {
       const dbRes = await pool.query(
-        `SELECT "FinInstrmId" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
+        `SELECT "FinInstrmId", "TckrSymb" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
         [symbol]
       );
       if (dbRes.rows.length > 0) {
         const row = dbRes.rows[0];
-        const rawId = row.FinInstrmId ?? row.fininstrmid ?? Object.values(row)[0];
+        const rawId = row.FinInstrmId ?? row.fininstrmid;
+        const tckrSymb = row.TckrSymb ?? row.tckrsymb;
         if (rawId) {
           result = getCompanyConcern({ splitDir, mappingsPath, symbolQuery: rawId.toString(), concern, variant });
+        }
+        if (result.status === 'company_not_found' && tckrSymb) {
+          result = getCompanyConcern({ splitDir, mappingsPath, symbolQuery: tckrSymb, concern, variant });
         }
       }
     } catch (e) {
