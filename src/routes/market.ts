@@ -994,6 +994,37 @@ router.get('/company/:symbol/:concern', asyncHandler(async (req, res) => {
     return;
   }
 
+  // For key_metrics, replace screener.in's static "High / Low" (52-week,
+  // frozen at last scrape time) with live 52-week and all-time high/low
+  // from company_price_extremes, kept current by sodhaniScrap's live sync.
+  // Falls back to leaving the scraped field untouched if there's no
+  // matching company_price_extremes row (e.g. not backfilled yet).
+  if (concern === 'key_metrics') {
+    try {
+      const csRes = await pool.query(
+        `SELECT "FinInstrmId" FROM company_stock WHERE TRIM(UPPER("TckrSymb")) = TRIM(UPPER($1)) OR TRIM("FinInstrmId"::text) = TRIM($1) LIMIT 1`,
+        [symbol]
+      );
+      const finId = csRes.rows[0]?.FinInstrmId?.toString();
+      if (finId) {
+        const extremesRes = await pool.query(
+          `SELECT high_1y, low_1y, high_all, low_all FROM company_price_extremes WHERE "FinInstrmId" = $1`,
+          [finId]
+        );
+        const extremes = extremesRes.rows[0];
+        if (extremes && extremes.high_1y != null && extremes.low_1y != null && extremes.high_all != null && extremes.low_all != null) {
+          const fmtPrice = (n: number) => (Number.isInteger(n) ? n.toString() : n.toFixed(2));
+          const data = result.data as Record<string, unknown>;
+          delete data['High / Low'];
+          data['52 Week High / Low'] = `₹ ${fmtPrice(Number(extremes.high_1y))} / ${fmtPrice(Number(extremes.low_1y))}`;
+          data['All Time High / Low'] = `₹ ${fmtPrice(Number(extremes.high_all))} / ${fmtPrice(Number(extremes.low_all))}`;
+        }
+      }
+    } catch (e) {
+      console.error('Failed to enrich key_metrics with price extremes:', e);
+    }
+  }
+
   res.json(result.data);
 }));
 
