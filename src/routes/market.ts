@@ -997,8 +997,11 @@ router.get('/company/:symbol/:concern', asyncHandler(async (req, res) => {
   // For key_metrics, replace screener.in's static "High / Low" (52-week,
   // frozen at last scrape time) with live 52-week and all-time high/low
   // from company_price_extremes, kept current by sodhaniScrap's live sync.
-  // Falls back to leaving the scraped field untouched if there's no
-  // matching company_price_extremes row (e.g. not backfilled yet).
+  // Field names match what KeyMetricsGrid.tsx already expects: "High / Low"
+  // (parsed via splitHighLow into 52w high/low) plus separate "All-time High"
+  // / "All-time Low" strings. Falls back to leaving "High / Low" as scraped
+  // and omitting the all-time fields if there's no matching
+  // company_price_extremes row (e.g. not backfilled yet).
   if (concern === 'key_metrics') {
     try {
       const csRes = await pool.query(
@@ -1015,9 +1018,9 @@ router.get('/company/:symbol/:concern', asyncHandler(async (req, res) => {
         if (extremes && extremes.high_1y != null && extremes.low_1y != null && extremes.high_all != null && extremes.low_all != null) {
           const fmtPrice = (n: number) => (Number.isInteger(n) ? n.toString() : n.toFixed(2));
           const data = result.data as Record<string, unknown>;
-          delete data['High / Low'];
-          data['52 Week High / Low'] = `₹ ${fmtPrice(Number(extremes.high_1y))} / ${fmtPrice(Number(extremes.low_1y))}`;
-          data['All Time High / Low'] = `₹ ${fmtPrice(Number(extremes.high_all))} / ${fmtPrice(Number(extremes.low_all))}`;
+          data['High / Low'] = `₹ ${fmtPrice(Number(extremes.high_1y))} / ${fmtPrice(Number(extremes.low_1y))}`;
+          data['All-time High'] = `₹${fmtPrice(Number(extremes.high_all))}`;
+          data['All-time Low'] = `₹${fmtPrice(Number(extremes.low_all))}`;
         }
       }
     } catch (e) {
