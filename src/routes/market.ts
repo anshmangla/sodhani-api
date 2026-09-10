@@ -9,6 +9,7 @@ import {
   concernRequiresVariant,
   Variant,
 } from '../services/companySplitDataService';
+import { impliedShares, impliedEps } from '../services/metricsDerive';
 
 const router = Router();
 
@@ -1170,16 +1171,23 @@ router.get('/metrics/:symbol', asyncHandler(async (req, res) => {
   }
 
   const row = result.rows[0];
+  const cmp = parseFloat(row.cmp);
+  const pe = parseFloat(row.pe);
+  const mktCap = parseFloat(row.mkt_cap);
   const metrics = {
-    "CMP": parseFloat(row.cmp),
-    "P/E": parseFloat(row.pe),
-    "Mkt Cap": parseFloat(row.mkt_cap),
+    "CMP": cmp,
+    "P/E": pe,
+    "Mkt Cap": mktCap,
     "Div Yld": parseFloat(row.div_yld),
     "NP Qtr": parseFloat(row.np_qtr),
     "Profit Var": parseFloat(row.profit_var),
     "Sales Qtr": parseFloat(row.sales_qtr),
     "Sales Var": parseFloat(row.sales_var),
     "ROCE": parseFloat(row.roce),
+    // Derived so clients can re-price Mkt Cap / P-E against a live quote -
+    // the stored pair is only correct at the CMP of the last sync run.
+    "Shares": impliedShares(mktCap, cmp),
+    "EPS": impliedEps(cmp, pe),
     "updated_at": row.updated_at
   };
 
