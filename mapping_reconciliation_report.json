@@ -1,31 +1,71 @@
 {
   "sources": {
-    "bse_bhavcopy": "BhavCopy_BSE_CM_0_0_0_20260910_F_0000.CSV",
+    "bse_bhavcopy": "BhavCopy_BSE_CM_0_0_0_20260911_F_0000.CSV",
     "nse_equity_list": "EQUITY_L.csv",
     "nse_sme_list": "SME_EQUITY_L.csv",
     "nse_sme_rows_added": 572,
     "rights_entitlements_excluded": [
+      "751131",
+      "751132",
+      "751139",
+      "751140",
+      "800441",
+      "800442",
+      "800443",
+      "800452",
+      "800488",
+      "800573",
+      "800575",
       "ANOND-RE",
       "JAYKAY-RE1",
       "MPEL-RE",
       "RCDL-RE"
     ],
-    "bse_equity_rows": 4256,
-    "bse_fund_rows_excluded": 269,
-    "bse_codes_from_supplement": 6,
-    "nse_rows": 3136
+    "bse_equity_rows": 4282,
+    "bse_non_equity_rows_excluded": 725,
+    "excluded_by_isin_prefix_and_type": {
+      "INE/07": 338,
+      "INF/01": 117,
+      "INF/C1": 53,
+      "INF/B1": 50,
+      "INF/A1": 41,
+      "INE/08": 28,
+      "INE/A7": 14,
+      "INF/1A": 13,
+      "IN0/00": 13,
+      "IN0/10": 9,
+      "IN9/01": 8,
+      "INE/20": 8,
+      "IN0/30": 8,
+      "IN0/20": 7,
+      "IN0/50": 4,
+      "IN0/40": 4,
+      "IN0/60": 2,
+      "IN0/90": 2,
+      "IN0/5Z": 2,
+      "IN4/60": 2,
+      "INE/09": 2,
+      "IN0/70": 1,
+      "IN0/80": 1,
+      "IN0/8C": 1,
+      "IN0/4P": 1,
+      "IN0/6X": 1,
+      "INE/24": 1
+    },
+    "bse_codes_from_supplement": 3,
+    "nse_rows": 3134
   },
   "join": {
     "both": 2401,
-    "bse_only": 1861,
-    "nse_only": 735
+    "bse_only": 1884,
+    "nse_only": 733
   },
   "counts": {
     "new_pair": 0,
-    "new_bse_only": 0,
+    "new_bse_only": 9,
     "new_nse_only": 0,
-    "promote_from_bse_only": 0,
-    "promote_from_nse_only": 0,
+    "promote_from_bse_only": 1,
+    "promote_from_nse_only": 1,
     "retarget": 0
   },
   "totals": {
@@ -35,9 +75,9 @@
       "nse_only": 716
     },
     "after": {
-      "both": 2487,
-      "bse_only": 2286,
-      "nse_only": 716
+      "both": 2489,
+      "bse_only": 2294,
+      "nse_only": 714
     }
   },
   "supplemented_bse_codes": [
@@ -50,29 +90,77 @@
       "bse_code": "539545"
     },
     {
-      "isin": "INE327G01032",
-      "bse_code": "540728"
-    },
-    {
-      "isin": "INE782D01027",
-      "bse_code": "505216"
-    },
-    {
       "isin": "INE823B01015",
       "bse_code": "531041"
-    },
-    {
-      "isin": "INE938C01019",
-      "bse_code": "502958"
     }
   ],
   "stale_nse_tickers_removed": [],
   "operations": {
     "new_pair": [],
-    "new_bse_only": [],
+    "new_bse_only": [
+      {
+        "bse_code": "526977",
+        "isin": "INE318P01016",
+        "company": "CRIMSON METAL ENGINEERING COMP"
+      },
+      {
+        "bse_code": "532470",
+        "isin": "INE095E01022",
+        "company": "MPF Systems Limited"
+      },
+      {
+        "bse_code": "536710",
+        "isin": "INE326P01019",
+        "company": "SRG FINGROW FINANCE LIMITED"
+      },
+      {
+        "bse_code": "539521",
+        "isin": "INE364T01012",
+        "company": "Navigant Corporate Advisors Li"
+      },
+      {
+        "bse_code": "544772",
+        "isin": "INE1KVL01010",
+        "company": "AUREATE TRADDE LIMITED"
+      },
+      {
+        "bse_code": "544797",
+        "isin": "INE0X6O01027",
+        "company": "LEAPFROG ENGINEERING SERVICES"
+      },
+      {
+        "bse_code": "544798",
+        "isin": "INE1OSI01014",
+        "company": "DIKSHA POLYMERS LIMITED"
+      },
+      {
+        "bse_code": "544813",
+        "isin": "INE1EVO01017",
+        "company": "Seemax Resources Limited"
+      },
+      {
+        "bse_code": "544848",
+        "isin": "INE17DP01015",
+        "company": "H. R. HYGIENE PRODUCTS LIMITED"
+      }
+    ],
     "new_nse_only": [],
-    "promote_from_bse_only": [],
-    "promote_from_nse_only": [],
+    "promote_from_bse_only": [
+      {
+        "bse_code": "503229",
+        "nse_ticker": "SIMPLXREA",
+        "isin": "INE167H01014",
+        "company": "Simplex Realty Limited"
+      }
+    ],
+    "promote_from_nse_only": [
+      {
+        "bse_code": "544908",
+        "nse_ticker": "DOLLEX",
+        "isin": "INE0JHH01011",
+        "company": "Dollex Agrotech Limited"
+      }
+    ],
     "retarget": []
   },
   "invariant_errors": []

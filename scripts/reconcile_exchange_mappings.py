@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import collections
 from collections import Counter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,23 +40,41 @@ REPORT = os.path.join(ROOT, "mapping_reconciliation_report.json")
 SME_SYMBOL_KEYS = ("SYMBOL",)
 SME_ISIN_KEYS = ("ISIN_NUMBER", "ISIN NUMBER")
 
-# Characters 8-9 of an Indian ISIN encode the security type: "01" is ordinary
-# equity, "20" is a Rights Entitlement - a temporary instrument that trades only
-# while a rights issue is open and then ceases to exist. Those are not companies
-# and must not enter the mapping, or bootstrapMasterList creates a company_stock
-# row (and a Yahoo history fetch) for a symbol that is about to vanish. Both NSE
-# files carry them: JAYKAY-RE1 on the main board, three more on Emerge.
+# What counts as a company equity, decided from the ISIN rather than from the
+# exchange's own series/group field.
+#
+# An Indian ISIN is IN + issuer-type + 5-char issuer + 2-char security type + a
+# check digit. The issuer-type is E for companies, F for mutual funds, 0 for
+# government paper, and 9 for partly-paid or differential-voting-rights lines -
+# a second listing of a company that already appears under its ordinary code,
+# so including those duplicates the company (890217 Aplab alongside 517096
+# Aplab, and four more). The security type is "01" for ordinary equity, "07"/"08"
+# for debentures and bonds, "20" for a Rights Entitlement (a temporary
+# instrument that trades only while a rights issue is open, then ceases to
+# exist). "23" and "25" are further equity classes this mapping has always
+# carried.
+#
+# Both halves are needed. Filtering on SctySrs alone lets 205 fund rows through
+# in series B; filtering on the INE prefix alone lets through 338 debentures and
+# 28 bonds, which are issued by companies and so carry INE ISINs too. Measured
+# against the existing mapping on a full bhavcopy, this rule keeps what is
+# already there (01: 100%, 23: 100%, 25: 100%) and drops what is not (07, 08,
+# A7, 09, 24, 20 and every INF/IN0/IN4 row: 0%). IN9 lines already in the file
+# stay there - nothing is ever removed - they simply are not re-asserted.
+EQUITY_ISIN_PREFIXES = ("INE",)
+EQUITY_SECURITY_TYPES = {"01", "23", "25"}
 RIGHTS_ENTITLEMENT_TYPE = "20"
+
+
+def is_equity_isin(isin: str) -> bool:
+    return (len(isin) == 12
+            and isin[:3] in EQUITY_ISIN_PREFIXES
+            and isin[7:9] in EQUITY_SECURITY_TYPES)
 
 
 def is_rights_entitlement(isin: str) -> bool:
     return len(isin) == 12 and isin[7:9] == RIGHTS_ENTITLEMENT_TYPE
 
-
-# Indian ISINs starting INF are mutual fund / ETF units, not company equity.
-# Filtering on SctySrs instead is not enough: only 64 of the 269 fund rows carry
-# series F/E, the other 205 sit in series B alongside ordinary stocks.
-FUND_ISIN_PREFIX = "INF"
 
 BSE_CODE_RE = re.compile(r"^\d{6}$")
 ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}\d$")
@@ -137,13 +156,19 @@ def main() -> None:
                     if r["ISIN NUMBER"] not in seen_isin and r["SYMBOL"] not in seen_sym]
         nse_rows = nse_rows + sme_rows
 
-    funds = [r for r in bse_rows if r["ISIN"].startswith(FUND_ISIN_PREFIX)]
-    bse_rows = [r for r in bse_rows if not r["ISIN"].startswith(FUND_ISIN_PREFIX)]
-
-    rights = ([r["SYMBOL"] for r in nse_rows if is_rights_entitlement(r["ISIN NUMBER"])]
-              + [r["FinInstrmId"] for r in bse_rows if is_rights_entitlement(r["ISIN"])])
-    nse_rows = [r for r in nse_rows if not is_rights_entitlement(r["ISIN NUMBER"])]
-    bse_rows = [r for r in bse_rows if not is_rights_entitlement(r["ISIN"])]
+    rejected = collections.Counter()
+    rights = []
+    for row, key, ident in ([(r, "ISIN", "FinInstrmId") for r in bse_rows]
+                            + [(r, "ISIN NUMBER", "SYMBOL") for r in nse_rows]):
+        isin = row[key]
+        if not is_equity_isin(isin):
+            rejected[isin[:3] + "/" + (isin[7:9] if len(isin) == 12 else "??")] += 1
+            if is_rights_entitlement(isin):
+                rights.append(row[ident])
+    nse_rows = [r for r in nse_rows if is_equity_isin(r["ISIN NUMBER"])]
+    non_equity = len(bse_rows)
+    bse_rows = [r for r in bse_rows if is_equity_isin(r["ISIN"])]
+    non_equity -= len(bse_rows)
 
     check_unique(bse_rows, "ISIN", "FinInstrmId", "BSE bhavcopy")
     check_unique(nse_rows, "ISIN NUMBER", "SYMBOL", "NSE equity list")
@@ -281,7 +306,8 @@ def main() -> None:
             "nse_sme_rows_added": len(sme_rows),
             "rights_entitlements_excluded": sorted(rights),
             "bse_equity_rows": len(bse_rows),
-            "bse_fund_rows_excluded": len(funds),
+            "bse_non_equity_rows_excluded": non_equity,
+            "excluded_by_isin_prefix_and_type": dict(rejected.most_common()),
             "bse_codes_from_supplement": len(supplemented),
             "nse_rows": len(nse_rows),
         },
@@ -310,7 +336,7 @@ def main() -> None:
         return
 
     print(f"BSE {os.path.basename(bhavcopy)}: {len(bse_rows)} equity rows "
-          f"({len(funds)} INF fund rows excluded"
+          f"({non_equity} non-equity rows excluded"
           + (f", +{len(supplemented)} from supplement" if supplemented else "") + ")")
     print(f"NSE {os.path.basename(args.nse_csv)}: {len(nse_rows)} rows"
           + (f" (+{len(sme_rows)} SME)" if sme_rows else ""))
