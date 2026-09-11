@@ -626,22 +626,39 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
     } else {
       // Rows written before prev_close existed, or an instrument the live feeds
       // didn't cover this session - fall back to the previous day's close.
+      //
+      // Every predicate here is a plain equality/range on ("FinInstrmId",
+      // record_date) so the lookup rides historical_prices_idx and stops at the
+      // first matching tuple. Wrapping record_date in DATE() instead makes the
+      // index unusable and the query then exceeds statement_timeout on
+      // instruments with a long history.
       const prevRes = await pool.query(
-        `SELECT hp2."close_price"
-         FROM historical_prices hp2
-         JOIN company_stock cs ON cs."FinInstrmId" = hp2."FinInstrmId"
-         WHERE (UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1)
-           AND DATE(hp2."record_date") < (
-             SELECT MAX(DATE("record_date"))
-             FROM historical_prices hp3
-             WHERE hp3."FinInstrmId" = cs."FinInstrmId"
-           )
+        `WITH target AS (
+           SELECT cs."FinInstrmId" AS fid
+           FROM company_stock cs
+           WHERE UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1
+           LIMIT 1
+         ),
+         prev_day AS (
+           SELECT DATE_TRUNC('day', hp."record_date") AS d
+           FROM historical_prices hp, target
+           WHERE hp."FinInstrmId" = target.fid
+             AND hp."record_date" < DATE_TRUNC('day', $2::timestamp)
+           ORDER BY hp."record_date" DESC
+           LIMIT 1
+         )
+         SELECT hp."close_price"
+         FROM historical_prices hp, target, prev_day
+         WHERE hp."FinInstrmId" = target.fid
+           AND hp."record_date" >= prev_day.d
+           AND hp."record_date" < prev_day.d + INTERVAL '1 day'
          ORDER BY
-             DATE(hp2."record_date") DESC,
-             CASE WHEN EXTRACT(HOUR FROM hp2."record_date") = 0 AND EXTRACT(MINUTE FROM hp2."record_date") = 0 THEN 1 ELSE 0 END DESC,
-             hp2."record_date" DESC
+             -- Prefer that day's official EOD bar (midnight) over its last
+             -- intraday tick, matching how /api/quote resolves a previous close.
+             CASE WHEN hp."record_date" = prev_day.d THEN 1 ELSE 0 END DESC,
+             hp."record_date" DESC
          LIMIT 1`,
-        [symbol]
+        [symbol, history[0].record_date]
       );
       if (prevRes.rows.length > 0 && prevRes.rows[0].close_price != null) {
         prevClose = Number(prevRes.rows[0].close_price);
