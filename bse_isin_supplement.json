@@ -1,0 +1,9 @@
+{
+  "_comment": "ISIN -> BSE scrip code for companies whose scrip is absent from the bhavcopy because it did not trade that day. A bhavcopy is a single day's TRADING report (zero rows with zero volume), so an illiquid scrip simply is not in it, and the ISIN join cannot see its BSE side. Without these, the NSE ticker gets filed as nse_only while the BSE code stays in bse_only - the same company recorded twice, which in companies.json becomes two company_stock rows. Codes verified against company_stock.ISIN. Entries whose ISIN already appears in the bhavcopy are ignored, so this file is safe to leave in place as the bhavcopy changes.",
+  "INE782D01027": "505216",
+  "INE217S01014": "539545",
+  "INE823B01015": "531041",
+  "INE938C01019": "502958",
+  "INE137M01017": "539112",
+  "INE327G01032": "540728"
+}

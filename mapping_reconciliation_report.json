@@ -1,0 +1,108 @@
+{
+  "sources": {
+    "bse_bhavcopy": "BhavCopy_BSE_CM_0_0_0_20260910_F_0000.CSV",
+    "nse_equity_list": "EQUITY_L.csv",
+    "bse_equity_rows": 4256,
+    "bse_fund_rows_excluded": 269,
+    "bse_codes_from_supplement": 6,
+    "nse_rows": 2568
+  },
+  "join": {
+    "both": 2401,
+    "bse_only": 1861,
+    "nse_only": 167
+  },
+  "counts": {
+    "new_pair": 0,
+    "new_bse_only": 0,
+    "new_nse_only": 0,
+    "promote_from_bse_only": 6,
+    "promote_from_nse_only": 0,
+    "retarget": 0
+  },
+  "totals": {
+    "before": {
+      "both": 2481,
+      "bse_only": 2292,
+      "nse_only": 681
+    },
+    "after": {
+      "both": 2487,
+      "bse_only": 2286,
+      "nse_only": 675
+    }
+  },
+  "supplemented_bse_codes": [
+    {
+      "isin": "INE137M01017",
+      "bse_code": "539112"
+    },
+    {
+      "isin": "INE217S01014",
+      "bse_code": "539545"
+    },
+    {
+      "isin": "INE327G01032",
+      "bse_code": "540728"
+    },
+    {
+      "isin": "INE782D01027",
+      "bse_code": "505216"
+    },
+    {
+      "isin": "INE823B01015",
+      "bse_code": "531041"
+    },
+    {
+      "isin": "INE938C01019",
+      "bse_code": "502958"
+    }
+  ],
+  "stale_nse_tickers_removed": [],
+  "operations": {
+    "new_pair": [],
+    "new_bse_only": [],
+    "new_nse_only": [],
+    "promote_from_bse_only": [
+      {
+        "bse_code": "502958",
+        "nse_ticker": "LAKSHMIMIL",
+        "isin": "INE938C01019",
+        "company": "Lakshmi Mills Company Limited"
+      },
+      {
+        "bse_code": "505216",
+        "nse_ticker": "ALFREDHE",
+        "isin": "INE782D01027",
+        "company": "Alfred Herbert India Limited"
+      },
+      {
+        "bse_code": "531041",
+        "nse_ticker": "COMPEAU",
+        "isin": "INE823B01015",
+        "company": "Competent Automobiles Company Limited"
+      },
+      {
+        "bse_code": "539112",
+        "nse_ticker": "SAB",
+        "isin": "INE137M01017",
+        "company": "SAB Industries Limited"
+      },
+      {
+        "bse_code": "539545",
+        "nse_ticker": "APOORVA",
+        "isin": "INE217S01014",
+        "company": "Apoorva Leasing Finance and Investment Company Limited"
+      },
+      {
+        "bse_code": "540728",
+        "nse_ticker": "SAYAJIIND",
+        "isin": "INE327G01032",
+        "company": "Sayaji Industries Limited"
+      }
+    ],
+    "promote_from_nse_only": [],
+    "retarget": []
+  },
+  "invariant_errors": []
+}
