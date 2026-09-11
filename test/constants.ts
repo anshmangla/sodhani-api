@@ -31,11 +31,17 @@ export const TEST_USER2_ID = '00000000-0000-0000-0000-000000000002';
 export const TEST_RA_ID = '00000000-0000-0000-0000-000000000101';
 export const TEST_RA2_ID = '00000000-0000-0000-0000-000000000102';
 
+// Day-change is measured against the previous close, so these rows cover both
+// ways one is resolved:
+//   RELIANCE - prevClose set on its own row, i.e. the official value the live
+//              feed shipped for the session. This is the preferred source.
+//   INFY     - no prevClose on its row (the feed didn't cover it that session),
+//              so it must fall back to prevDayClose, seeded as an earlier bar.
+//   TCS      - no history at all -> exercises the null-price branch.
 export const SEEDED_STOCKS = [
-  { finInstrmId: '500325', symbol: 'RELIANCE', name: 'Reliance Industries Ltd', open: 2950, close: 3000 },
-  { finInstrmId: '500209', symbol: 'INFY', name: 'Infosys Ltd', open: 1780, close: 1800 },
-  // TCS has a company_stock row but no history -> exercises the null-price branch.
-  { finInstrmId: '500790', symbol: 'TCS', name: 'Tata Consultancy Services Ltd', open: null, close: null },
+  { finInstrmId: '500325', symbol: 'RELIANCE', name: 'Reliance Industries Ltd', open: 2950, close: 3000, prevClose: 2900, prevDayClose: null },
+  { finInstrmId: '500209', symbol: 'INFY', name: 'Infosys Ltd', open: 1780, close: 1800, prevClose: null, prevDayClose: 1750 },
+  { finInstrmId: '500790', symbol: 'TCS', name: 'Tata Consultancy Services Ltd', open: null, close: null, prevClose: null, prevDayClose: null },
 ];
 
 // Peer-comparison fixtures: company_stock + stock_metrics + company_sectors

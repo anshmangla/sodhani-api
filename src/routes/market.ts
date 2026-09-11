@@ -15,6 +15,23 @@ const router = Router();
 
 const VALID_QUERY_REGEX = /^[A-Za-z0-9._\-&]{1,32}$/;
 
+// Single source of truth for "what do we measure today's move against".
+//
+// Preferred: the official exchange previous close the scraper writes onto the
+// current session's own rows (historical_prices.prev_close) - constant within a
+// trading day, so MAX() just picks it while ignoring rows that predate the
+// column. Falls back to the close of the most recent earlier trading day for
+// instruments the live feeds don't cover that session: Yahoo-only instruments,
+// and BSE-only scrips that finished flat (BSE's gainers/losers feed omits any
+// stock with a 0% move, so those get no tick at all).
+//
+// Requires `hp_latest` (aggregated over the latest trading day, selecting
+// MAX(prev_close) AS true_prev_close) and `hp_prev` to already be in scope.
+const PREV_CLOSE_LATERAL = `
+     LEFT JOIN LATERAL (
+       SELECT COALESCE(hp_latest."true_prev_close", hp_prev."prev_close") AS prev_close
+     ) pc ON true`;
+
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
     fn(req, res).catch(next);
@@ -274,10 +291,10 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
             hp_latest."true_high" AS "HighPric",
             hp_latest."true_low" AS "LowPric",
             hp_latest."true_close" AS "ClosePric",
-              hp_prev."prev_close" AS "PrevClosePric",
-            (hp_latest."true_close"::float - hp_prev."prev_close"::float) AS "ChangeVal",
-            CASE WHEN hp_prev."prev_close"::float > 0
-              THEN ((hp_latest."true_close"::float - hp_prev."prev_close"::float) / hp_prev."prev_close"::float) * 100
+            pc."prev_close" AS "PrevClosePric",
+            (hp_latest."true_close"::float - pc."prev_close"::float) AS "ChangeVal",
+            CASE WHEN pc."prev_close"::float > 0
+              THEN ((hp_latest."true_close"::float - pc."prev_close"::float) / pc."prev_close"::float) * 100
               ELSE 0
             END AS "ChangePercent"
      FROM company_stock cs
@@ -288,7 +305,8 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
          MAX(high_price) as true_high,
          MIN(low_price) as true_low,
          (array_agg(close_price ORDER BY record_date DESC))[1] as true_close,
-         SUM(volume) as true_volume
+         SUM(volume) as true_volume,
+         MAX(prev_close) as true_prev_close
        FROM historical_prices hp
        WHERE hp."FinInstrmId" = cs."FinInstrmId"
          AND DATE(hp.record_date) = (
@@ -306,12 +324,13 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
            FROM historical_prices
            WHERE "FinInstrmId" = cs."FinInstrmId"
          )
-       ORDER BY 
+       ORDER BY
            DATE(hp2.record_date) DESC,
            CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
            hp2.record_date DESC
          LIMIT 1
      ) hp_prev ON true
+     ${PREV_CLOSE_LATERAL}
      WHERE UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1
      LIMIT 1`,
     [symbol]
@@ -358,10 +377,10 @@ router.get('/quotes', asyncHandler(async (req, res) => {
             hp_latest."true_high" AS "HighPric",
             hp_latest."true_low" AS "LowPric",
             hp_latest."true_close" AS "ClosePric",
-              hp_prev."prev_close" AS "PrevClosePric",
-            (hp_latest."true_close"::float - hp_prev."prev_close"::float) AS "ChangeVal",
-            CASE WHEN hp_prev."prev_close"::float > 0
-              THEN ((hp_latest."true_close"::float - hp_prev."prev_close"::float) / hp_prev."prev_close"::float) * 100
+            pc."prev_close" AS "PrevClosePric",
+            (hp_latest."true_close"::float - pc."prev_close"::float) AS "ChangeVal",
+            CASE WHEN pc."prev_close"::float > 0
+              THEN ((hp_latest."true_close"::float - pc."prev_close"::float) / pc."prev_close"::float) * 100
               ELSE 0
             END AS "ChangePercent"
      FROM company_stock cs
@@ -372,7 +391,8 @@ router.get('/quotes', asyncHandler(async (req, res) => {
          MAX(high_price) as true_high,
          MIN(low_price) as true_low,
          (array_agg(close_price ORDER BY record_date DESC))[1] as true_close,
-         SUM(volume) as true_volume
+         SUM(volume) as true_volume,
+         MAX(prev_close) as true_prev_close
        FROM historical_prices hp
        WHERE hp."FinInstrmId" = cs."FinInstrmId"
          AND DATE(hp.record_date) = (
@@ -390,12 +410,13 @@ router.get('/quotes', asyncHandler(async (req, res) => {
            FROM historical_prices
            WHERE "FinInstrmId" = cs."FinInstrmId"
          )
-       ORDER BY 
+       ORDER BY
            DATE(hp2.record_date) DESC,
            CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
            hp2.record_date DESC
          LIMIT 1
      ) hp_prev ON true
+     ${PREV_CLOSE_LATERAL}
      WHERE UPPER(cs."TckrSymb") = ANY($1) OR cs."FinInstrmId"::text = ANY($2)`,
     [upperCodes, codes]
   );
@@ -485,7 +506,8 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
     // For line/area charts, fetch raw EOD data ordered ASC for LTTB downsampling
     sql = isIntraday
       ? `SELECT hp."record_date", hp."open_price", hp."high_price", hp."low_price",
-                hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits"
+                hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits",
+                hp."prev_close"
          FROM historical_prices hp
          JOIN company_stock cs ON cs."FinInstrmId" = hp."FinInstrmId"
          WHERE (UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1)
@@ -508,7 +530,8 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
       // Duration < 1 Year: Raw Daily Data (or every intraday snapshot for 1D)
       sql = isIntraday
         ? `SELECT hp."record_date", hp."open_price", hp."high_price", hp."low_price",
-                  hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits"
+                  hp."close_price", hp."adj_close", hp."volume", hp."dividends", hp."stock_splits",
+                  hp."prev_close"
            FROM historical_prices hp
            JOIN company_stock cs ON cs."FinInstrmId" = hp."FinInstrmId"
            WHERE (UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1)
@@ -582,13 +605,57 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
     history.reverse();
   }
 
-  // Percentage change across the whole returned window, against the opening
-  // price of the earliest bar — same convention as /api/quote's ChangePercent.
-  // Note: history is ordered DESC by date (newest first, oldest last), so the
-  // earliest bar in the window sits at the end of the array.
+  // Percentage change across the returned window. history is ordered DESC by
+  // date (newest first, oldest last), so the earliest bar sits at the end.
+  //
+  // 1D is the day-change and must use the same base as /api/quote: the official
+  // exchange previous close. Measuring it against the earliest bar's open would
+  // be wrong twice over - it silently drops the overnight gap, and for NSE rows
+  // that "open" is just the 09:18 poll (the 09:15 open is never captured), so
+  // the number wouldn't match the quote screen for the same stock.
+  //
+  // Longer ranges keep the window convention: change from where the window
+  // opened to the latest close.
   const latestPrice = Number(history[0].close_price);
-  const earliestOpen = Number(history[history.length - 1].open_price);
-  const changePercent = earliestOpen ? ((latestPrice - earliestOpen) / earliestOpen) * 100 : 0;
+  let prevClose: number | null = null;
+
+  if (range === '1d') {
+    const fromRow = history[0].prev_close;
+    if (fromRow != null) {
+      prevClose = Number(fromRow);
+    } else {
+      // Rows written before prev_close existed, or an instrument the live feeds
+      // didn't cover this session - fall back to the previous day's close.
+      const prevRes = await pool.query(
+        `SELECT hp2."close_price"
+         FROM historical_prices hp2
+         JOIN company_stock cs ON cs."FinInstrmId" = hp2."FinInstrmId"
+         WHERE (UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1)
+           AND DATE(hp2."record_date") < (
+             SELECT MAX(DATE("record_date"))
+             FROM historical_prices hp3
+             WHERE hp3."FinInstrmId" = cs."FinInstrmId"
+           )
+         ORDER BY
+             DATE(hp2."record_date") DESC,
+             CASE WHEN EXTRACT(HOUR FROM hp2."record_date") = 0 AND EXTRACT(MINUTE FROM hp2."record_date") = 0 THEN 1 ELSE 0 END DESC,
+             hp2."record_date" DESC
+         LIMIT 1`,
+        [symbol]
+      );
+      if (prevRes.rows.length > 0 && prevRes.rows[0].close_price != null) {
+        prevClose = Number(prevRes.rows[0].close_price);
+      }
+    }
+  }
+
+  let changePercent: number;
+  if (prevClose !== null && prevClose > 0) {
+    changePercent = ((latestPrice - prevClose) / prevClose) * 100;
+  } else {
+    const earliestOpen = Number(history[history.length - 1].open_price);
+    changePercent = earliestOpen ? ((latestPrice - earliestOpen) / earliestOpen) * 100 : 0;
+  }
 
   // Fetch pre-computed price extremes for the company
   let extremesRow: any = null;
@@ -1369,8 +1436,19 @@ router.get('/indices/:code/history', asyncHandler(async (req, res) => {
   let changePercent = 0;
   if (history.length > 0) {
     const latestValue = Number(history[0].value);
-    const earliestValue = Number(history[history.length - 1].value);
-    changePercent = earliestValue ? ((latestValue - earliestValue) / earliestValue) * 100 : 0;
+    // 1D is the day-change, so use the previous close the exchange feed already
+    // stores on each row. Measuring against the earliest tick in the window made
+    // the response contradict history[0].change_pct, which is the exchange's own
+    // number for the same move. Longer ranges keep the window convention.
+    const prevClose = range === '1d' && history[0].prev_close != null
+      ? Number(history[0].prev_close)
+      : null;
+    if (prevClose !== null && prevClose > 0) {
+      changePercent = ((latestValue - prevClose) / prevClose) * 100;
+    } else {
+      const earliestValue = Number(history[history.length - 1].value);
+      changePercent = earliestValue ? ((latestValue - earliestValue) / earliestValue) * 100 : 0;
+    }
   }
 
   res.json({
@@ -1408,20 +1486,33 @@ router.get('/indices/:code/constituents', asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT cs."FinInstrmId", cs."TckrSymb", cs."FinInstrmNm",
             hp_latest."close_price" AS last_price,
-            CASE WHEN hp_latest."open_price"::float > 0
-              THEN ((hp_latest."close_price"::float - hp_latest."open_price"::float) / hp_latest."open_price"::float) * 100
+            COALESCE(hp_latest."prev_close", hp_prev."prev_close") AS prev_close,
+            CASE WHEN COALESCE(hp_latest."prev_close", hp_prev."prev_close")::float > 0
+              THEN ((hp_latest."close_price"::float - COALESCE(hp_latest."prev_close", hp_prev."prev_close")::float)
+                    / COALESCE(hp_latest."prev_close", hp_prev."prev_close")::float) * 100
               ELSE 0
             END AS change_percent,
             hp_latest."volume"
      FROM ${source.constituentsTable} c
      JOIN company_stock cs ON cs."FinInstrmId" = c.${source.constituentsStockCol}
      LEFT JOIN LATERAL (
-       SELECT open_price, close_price, volume
+       SELECT open_price, close_price, volume, prev_close, record_date
        FROM historical_prices hp
        WHERE hp."FinInstrmId" = cs."FinInstrmId"
        ORDER BY record_date DESC
        LIMIT 1
      ) hp_latest ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT close_price AS prev_close
+       FROM historical_prices hp2
+       WHERE hp2."FinInstrmId" = cs."FinInstrmId"
+         AND DATE(hp2.record_date) < DATE(hp_latest."record_date")
+       ORDER BY
+           DATE(hp2.record_date) DESC,
+           CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
+           hp2.record_date DESC
+       LIMIT 1
+     ) hp_prev ON TRUE
      WHERE c."${source.constituentsIdCol}" = $1
      ORDER BY change_percent DESC NULLS LAST`,
     [resolvedCode]

@@ -15,6 +15,11 @@ types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)));
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  // historical_prices.record_date is TIMESTAMP (no zone) holding UTC wall clock,
+  // but CURRENT_DATE / DATE() resolve in the session timezone. Pin the session so
+  // every date-boundary comparison agrees with how the scraper writes the rows;
+  // a session west of UTC would shift them all by a day.
+  options: '-c timezone=UTC',
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,

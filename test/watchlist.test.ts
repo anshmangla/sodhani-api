@@ -74,8 +74,17 @@ describe('watchlist items', () => {
     expect(reliance).toBeDefined();
     expect(reliance.name).toBe('Reliance Industries Ltd');
     expect(reliance.price).toBe(3000);
-    expect(reliance.change).toBe(50);
-    expect(reliance.change_percent).toBeCloseTo((50 / 2950) * 100, 1);
+    // Measured against the official previous close on the row (2900), not the
+    // session's open - same base /api/quote uses, so the two agree.
+    expect(reliance.change).toBe(100);
+    expect(reliance.change_percent).toBeCloseTo((100 / 2900) * 100, 1);
+
+    // INFY carries no prev_close, so it falls back to the prior day's close (1750).
+    const infy = res.body.items.find((i: any) => i.symbol === 'INFY');
+    expect(infy).toBeDefined();
+    expect(infy.price).toBe(1800);
+    expect(infy.change).toBe(50);
+    expect(infy.change_percent).toBeCloseTo((50 / 1750) * 100, 1);
   });
 
   it('returns null price for a symbol with no history', async () => {

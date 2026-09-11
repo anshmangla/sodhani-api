@@ -11,14 +11,24 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
 }
 
 // Shared LATERAL block resolving the latest trading-day snapshot for a stock,
-// identical to the one used by /api/quote. Computes:
-//   price = latest close, change = close - open, change_percent vs open.
+// matching the one used by /api/quote. Computes:
+//   price = latest close, change = close - prev_close, change_percent vs prev_close.
+//
+// `pc.prev_close` prefers the official exchange previous close the scraper
+// writes onto the session's own rows, and falls back to the close of the most
+// recent earlier trading day for instruments the live feeds didn't cover.
+//
+// This used to measure against `true_open`, which made a watchlist row and the
+// quote screen disagree about the same stock on any overnight gap - and for NSE
+// rows that "open" is only the 09:18 poll, since the 09:15 open is never
+// captured. true_open is still selected; callers may report it as the day open.
 const PRICE_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT
       MAX(record_date) AS true_date,
       (array_agg(open_price ORDER BY record_date ASC))[1] AS true_open,
-      (array_agg(close_price ORDER BY record_date DESC))[1] AS true_close
+      (array_agg(close_price ORDER BY record_date DESC))[1] AS true_close,
+      MAX(prev_close) AS true_prev_close
     FROM historical_prices hp
     WHERE hp."FinInstrmId" = cs."FinInstrmId"
       AND DATE(hp.record_date) = (
@@ -26,7 +36,25 @@ const PRICE_LATERAL = `
         FROM historical_prices
         WHERE "FinInstrmId" = cs."FinInstrmId"
       )
-  ) hp_latest ON true`;
+  ) hp_latest ON true
+  LEFT JOIN LATERAL (
+    SELECT close_price AS prev_close
+    FROM historical_prices hp2
+    WHERE hp2."FinInstrmId" = cs."FinInstrmId"
+      AND DATE(hp2.record_date) < (
+        SELECT MAX(DATE(record_date))
+        FROM historical_prices
+        WHERE "FinInstrmId" = cs."FinInstrmId"
+      )
+    ORDER BY
+        DATE(hp2.record_date) DESC,
+        CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
+        hp2.record_date DESC
+    LIMIT 1
+  ) hp_prev ON true
+  LEFT JOIN LATERAL (
+    SELECT COALESCE(hp_latest."true_prev_close", hp_prev."prev_close") AS prev_close
+  ) pc ON true`;
 
 function mapPriceRow(row: any) {
   const price = row.price;
@@ -74,9 +102,9 @@ router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const result = await pool.query(
     `SELECT wi.id, UPPER(wi.symbol) AS symbol, cs."FinInstrmNm" AS name,
             hp_latest."true_close" AS price,
-            (hp_latest."true_close"::float - hp_latest."true_open"::float) AS change,
-            CASE WHEN hp_latest."true_open"::float > 0
-              THEN ((hp_latest."true_close"::float - hp_latest."true_open"::float) / hp_latest."true_open"::float) * 100
+            (hp_latest."true_close"::float - pc."prev_close"::float) AS change,
+            CASE WHEN pc."prev_close"::float > 0
+              THEN ((hp_latest."true_close"::float - pc."prev_close"::float) / pc."prev_close"::float) * 100
               ELSE 0
             END AS change_percent,
             wi.created_at
@@ -334,9 +362,9 @@ router.get('/playlists/:id/items', requireAuth, asyncHandler(async (req, res) =>
   const result = await pool.query(
     `SELECT wi.id, UPPER(wi.symbol) AS symbol, cs."FinInstrmNm" AS name,
             hp_latest."true_close" AS price,
-            (hp_latest."true_close"::float - hp_latest."true_open"::float) AS change,
-            CASE WHEN hp_latest."true_open"::float > 0
-              THEN ((hp_latest."true_close"::float - hp_latest."true_open"::float) / hp_latest."true_open"::float) * 100
+            (hp_latest."true_close"::float - pc."prev_close"::float) AS change,
+            CASE WHEN pc."prev_close"::float > 0
+              THEN ((hp_latest."true_close"::float - pc."prev_close"::float) / pc."prev_close"::float) * 100
               ELSE 0
             END AS change_percent,
             wpi.position,
