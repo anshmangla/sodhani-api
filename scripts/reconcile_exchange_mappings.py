@@ -32,6 +32,26 @@ NSE_CSV = os.path.join(ROOT, "EQUITY_L.csv")
 SUPPLEMENT = os.path.join(ROOT, "bse_isin_supplement.json")
 REPORT = os.path.join(ROOT, "mapping_reconciliation_report.json")
 
+# NSE publishes SME (Emerge) listings in their own file, with underscored
+# headers rather than the main board's leading-space ones. Optional: pass
+# --sme-csv to include them. Their ISINs do not appear in the BSE equity
+# bhavcopy, so every SME row resolves to nse_only.
+SME_SYMBOL_KEYS = ("SYMBOL",)
+SME_ISIN_KEYS = ("ISIN_NUMBER", "ISIN NUMBER")
+
+# Characters 8-9 of an Indian ISIN encode the security type: "01" is ordinary
+# equity, "20" is a Rights Entitlement - a temporary instrument that trades only
+# while a rights issue is open and then ceases to exist. Those are not companies
+# and must not enter the mapping, or bootstrapMasterList creates a company_stock
+# row (and a Yahoo history fetch) for a symbol that is about to vanish. Both NSE
+# files carry them: JAYKAY-RE1 on the main board, three more on Emerge.
+RIGHTS_ENTITLEMENT_TYPE = "20"
+
+
+def is_rights_entitlement(isin: str) -> bool:
+    return len(isin) == 12 and isin[7:9] == RIGHTS_ENTITLEMENT_TYPE
+
+
 # Indian ISINs starting INF are mutual fund / ETF units, not company equity.
 # Filtering on SctySrs instead is not enough: only 64 of the 269 fund rows carry
 # series F/E, the other 205 sit in series B alongside ordinary stocks.
@@ -41,10 +61,10 @@ BSE_CODE_RE = re.compile(r"^\d{6}$")
 ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}\d$")
 
 
-def find_bhavcopy() -> str:
-    matches = sorted(glob.glob(os.path.join(ROOT, "BhavCopy_BSE_CM_*.CSV")))
+def find_bhavcopy(directory: str) -> str:
+    matches = sorted(glob.glob(os.path.join(directory, "BhavCopy_BSE_CM_*.CSV")))
     if not matches:
-        sys.exit("No BhavCopy_BSE_CM_*.CSV found in the repo root.")
+        sys.exit(f"No BhavCopy_BSE_CM_*.CSV found in {directory}.")
     if len(matches) > 1:
         # Deliberate: silently picking one would make the run non-reproducible.
         sys.exit(
@@ -80,19 +100,53 @@ def check_unique(rows: list[dict], isin_key: str, code_key: str, label: str) -> 
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--write", action="store_true", help="apply changes to the mapping file")
+    ap.add_argument("--bhavcopy", help="BSE bhavcopy CSV (default: the one in the repo root)")
+    ap.add_argument("--nse-csv", default=NSE_CSV, help="NSE EQUITY_L.csv")
+    ap.add_argument("--sme-csv", help="NSE SME_EQUITY_L.csv (optional; adds Emerge listings)")
+    ap.add_argument("--mapping", default=MAPPING, help="mapping JSON to update")
+    ap.add_argument("--mirror", action="append", default=[],
+                    help="extra path to write the same JSON to (repeatable), e.g. companies.json")
+    ap.add_argument("--supplement", default=SUPPLEMENT, help="ISIN -> BSE code supplement JSON")
+    ap.add_argument("--report", default=REPORT, help="where to write the run report")
+    ap.add_argument("--quiet", action="store_true", help="only print when something changed")
     args = ap.parse_args()
 
-    bhavcopy = find_bhavcopy()
+    mapping_path, supplement_path, report_path = args.mapping, args.supplement, args.report
+    bhavcopy = args.bhavcopy or find_bhavcopy(ROOT)
     bse_rows = read_csv_stripped(bhavcopy)
-    nse_rows = read_csv_stripped(NSE_CSV)
+    nse_rows = read_csv_stripped(args.nse_csv)
+
+    # SME rows are normalised onto the main-board field names so the join below
+    # does not need to care which file a listing came from.
+    sme_rows = []
+    if args.sme_csv:
+        for r in read_csv_stripped(args.sme_csv):
+            sym = next((r[k] for k in SME_SYMBOL_KEYS if r.get(k)), "")
+            isin = next((r[k] for k in SME_ISIN_KEYS if r.get(k)), "")
+            if sym and isin:
+                sme_rows.append({"SYMBOL": sym, "ISIN NUMBER": isin,
+                                 "NAME OF COMPANY": r.get("NAME_OF_COMPANY", "")})
+        seen_isin = {r["ISIN NUMBER"] for r in nse_rows}
+        seen_sym = {r["SYMBOL"] for r in nse_rows}
+        # A symbol that graduated from Emerge to the main board appears in both;
+        # the main board entry wins.
+        sme_rows = [r for r in sme_rows
+                    if r["ISIN NUMBER"] not in seen_isin and r["SYMBOL"] not in seen_sym]
+        nse_rows = nse_rows + sme_rows
 
     funds = [r for r in bse_rows if r["ISIN"].startswith(FUND_ISIN_PREFIX)]
     bse_rows = [r for r in bse_rows if not r["ISIN"].startswith(FUND_ISIN_PREFIX)]
 
+    rights = ([r["SYMBOL"] for r in nse_rows if is_rights_entitlement(r["ISIN NUMBER"])]
+              + [r["FinInstrmId"] for r in bse_rows if is_rights_entitlement(r["ISIN"])])
+    nse_rows = [r for r in nse_rows if not is_rights_entitlement(r["ISIN NUMBER"])]
+    bse_rows = [r for r in bse_rows if not is_rights_entitlement(r["ISIN"])]
+
     check_unique(bse_rows, "ISIN", "FinInstrmId", "BSE bhavcopy")
-    check_unique(nse_rows, "ISIN NUMBER", "SYMBOL", "NSE EQUITY_L")
+    check_unique(nse_rows, "ISIN NUMBER", "SYMBOL", "NSE equity list")
 
     if bad := [r["FinInstrmId"] for r in bse_rows if not BSE_CODE_RE.match(r["FinInstrmId"])]:
         sys.exit(f"BSE bhavcopy: {len(bad)} non-6-digit code(s), e.g. {bad[:5]}")
@@ -106,8 +160,8 @@ def main() -> None:
     # recorded twice. The supplement carries ISIN -> code for those, so they pair
     # normally. Entries already covered by the bhavcopy are ignored.
     supplemented = []
-    if os.path.exists(SUPPLEMENT):
-        with open(SUPPLEMENT, encoding="utf-8") as fh:
+    if os.path.exists(supplement_path):
+        with open(supplement_path, encoding="utf-8") as fh:
             supp = {k: v for k, v in json.load(fh).items() if not k.startswith("_")}
         known_bse_codes = {r["FinInstrmId"] for r in bse_rows}
         for isin, code in sorted(supp.items()):
@@ -126,7 +180,7 @@ def main() -> None:
     bse_only_join = {bse_by_isin[i]["FinInstrmId"]: i for i in set(bse_by_isin) - set(nse_by_isin)}
     nse_only_join = {nse_by_isin[i]["SYMBOL"]: i for i in set(nse_by_isin) - set(bse_by_isin)}
 
-    with open(MAPPING, encoding="utf-8") as fh:
+    with open(mapping_path, encoding="utf-8") as fh:
         m = json.load(fh)
     before = json.dumps(m, sort_keys=True)
 
@@ -222,7 +276,10 @@ def main() -> None:
     report = {
         "sources": {
             "bse_bhavcopy": os.path.basename(bhavcopy),
-            "nse_equity_list": os.path.basename(NSE_CSV),
+            "nse_equity_list": os.path.basename(args.nse_csv),
+            "nse_sme_list": os.path.basename(args.sme_csv) if args.sme_csv else None,
+            "nse_sme_rows_added": len(sme_rows),
+            "rights_entitlements_excluded": sorted(rights),
             "bse_equity_rows": len(bse_rows),
             "bse_fund_rows_excluded": len(funds),
             "bse_codes_from_supplement": len(supplemented),
@@ -242,15 +299,23 @@ def main() -> None:
         "operations": ops,
         "invariant_errors": errors,
     }
-    with open(REPORT, "w", encoding="utf-8") as fh:
+    os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=2, sort_keys=False)
         fh.write("\n")
 
     old = json.loads(before)
+    changed = sum(len(v) for v in ops.values()) > 0
+    if args.quiet and not changed and not errors:
+        return
+
     print(f"BSE {os.path.basename(bhavcopy)}: {len(bse_rows)} equity rows "
           f"({len(funds)} INF fund rows excluded"
           + (f", +{len(supplemented)} from supplement" if supplemented else "") + ")")
-    print(f"NSE {os.path.basename(NSE_CSV)}: {len(nse_rows)} rows")
+    print(f"NSE {os.path.basename(args.nse_csv)}: {len(nse_rows)} rows"
+          + (f" (+{len(sme_rows)} SME)" if sme_rows else ""))
+    if rights:
+        print(f"  excluded {len(rights)} rights entitlement(s): {', '.join(sorted(rights))}")
     print(f"join: both {len(pairs)} | bse_only {len(bse_only_join)} | nse_only {len(nse_only_join)}\n")
     for k in ("new_pair", "new_bse_only", "new_nse_only",
               "promote_from_bse_only", "promote_from_nse_only", "retarget"):
