@@ -354,7 +354,7 @@ def main() -> None:
     if dropped_ticks:
         print(f"\n  stale NSE tickers removed by retargeting ({len(dropped_ticks)}): "
               + ", ".join(dropped_ticks))
-    print(f"\nreport: {os.path.relpath(REPORT, ROOT)}")
+    print(f"\nreport: {report_path}")
 
     if errors:
         print("\nINVARIANT FAILURES:")
@@ -366,10 +366,20 @@ def main() -> None:
         print("\nDry run. Re-run with --write to apply.")
         return
 
-    with open(MAPPING, "w", encoding="utf-8") as fh:
-        json.dump(m, fh, indent=2, ensure_ascii=False)
-        fh.write("\n")
-    print(f"\nwrote {os.path.relpath(MAPPING, ROOT)}")
+    if not changed:
+        print("\nNo changes to apply.")
+        return
+
+    # Every target gets the identical bytes, written to a temp file in the same
+    # directory and renamed, so the two mapping files cannot drift and no reader
+    # ever sees a half-written one.
+    payload = json.dumps(m, indent=2, ensure_ascii=False) + "\n"
+    for path in [mapping_path, *args.mirror]:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        os.replace(tmp, path)
+        print(f"wrote {path}")
 
 
 if __name__ == "__main__":
