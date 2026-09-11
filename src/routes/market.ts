@@ -1520,14 +1520,19 @@ router.get('/indices/:code/constituents', asyncHandler(async (req, res) => {
        LIMIT 1
      ) hp_latest ON TRUE
      LEFT JOIN LATERAL (
+       -- Fallback for constituents the live feeds didn't cover this session.
+       -- Plain range predicate on the indexed record_date so this is a backward
+       -- index scan that stops at the first row; DATE(record_date) here made the
+       -- index unusable and blew the statement timeout under write load.
+       -- Ordering by record_date alone (rather than preferring the previous
+       -- day's midnight EOD bar) is equivalent in practice: an instrument that
+       -- has intraday bars is one the feeds cover, and so has prev_close set
+       -- above, leaving this arm to instruments whose only bars are EOD.
        SELECT close_price AS prev_close
        FROM historical_prices hp2
        WHERE hp2."FinInstrmId" = cs."FinInstrmId"
-         AND DATE(hp2.record_date) < DATE(hp_latest."record_date")
-       ORDER BY
-           DATE(hp2.record_date) DESC,
-           CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
-           hp2.record_date DESC
+         AND hp2.record_date < DATE_TRUNC('day', hp_latest."record_date")
+       ORDER BY hp2.record_date DESC
        LIMIT 1
      ) hp_prev ON TRUE
      WHERE c."${source.constituentsIdCol}" = $1
