@@ -473,12 +473,30 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
     else { range = '1m'; durationDays = 30; } // default fallback
 
     if (range === '1d') {
-      // >= (not >): a symbol whose latest stored row lands exactly at
-      // midnight (EOD-only ingestion, e.g. a thin/new listing) is neither
-      // before nor strictly after DATE_TRUNC('day', that same timestamp) —
-      // it IS that timestamp — so a strict `>` excluded it entirely and
-      // 404'd instead of falling back to the most recent day with data.
-      timeFilter = `AND hp."record_date" >= DATE_TRUNC('day', (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId"))`;
+      // Anchor on the most recent day that has more than one row — i.e. one
+      // with real intraday ticks — rather than simply MAX(record_date).
+      // Some symbols get a single EOD/mirror row written forward even on a
+      // non-trading day (a daily bhavcopy job that doesn't check whether the
+      // market actually traded); MAX(record_date) alone would pick that lone
+      // placeholder row and shadow the real last session underneath it.
+      // Falls back to the latest day with any data for thin/new listings
+      // that only ever get one EOD row per day, so they still get their one
+      // real point instead of 404ing.
+      const anchorDay = `COALESCE(
+        (SELECT DATE_TRUNC('day', record_date) FROM historical_prices
+         WHERE "FinInstrmId" = cs."FinInstrmId"
+         GROUP BY DATE_TRUNC('day', record_date)
+         HAVING COUNT(*) > 1
+         ORDER BY DATE_TRUNC('day', record_date) DESC LIMIT 1),
+        (SELECT DATE_TRUNC('day', MAX(record_date)) FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId")
+      )`;
+      // >= / < (not a plain >): a symbol whose only row for its anchor day
+      // lands exactly at midnight (EOD-only ingestion) is neither before nor
+      // strictly after that same timestamp — it IS that timestamp — so a
+      // strict `>` would exclude it entirely and 404 instead of returning
+      // that day's data. The upper bound keeps a later, shadowed placeholder
+      // day (see above) out of the result once the anchor is the real day.
+      timeFilter = `AND hp."record_date" >= ${anchorDay} AND hp."record_date" < ${anchorDay} + INTERVAL '1 day'`;
     } else if (range === '1w') {
       timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '7 days'`;
     } else if (range === '1m') {
