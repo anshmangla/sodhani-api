@@ -473,7 +473,12 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
     else { range = '1m'; durationDays = 30; } // default fallback
 
     if (range === '1d') {
-      timeFilter = `AND hp."record_date" > DATE_TRUNC('day', (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId"))`;
+      // >= (not >): a symbol whose latest stored row lands exactly at
+      // midnight (EOD-only ingestion, e.g. a thin/new listing) is neither
+      // before nor strictly after DATE_TRUNC('day', that same timestamp) —
+      // it IS that timestamp — so a strict `>` excluded it entirely and
+      // 404'd instead of falling back to the most recent day with data.
+      timeFilter = `AND hp."record_date" >= DATE_TRUNC('day', (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId"))`;
     } else if (range === '1w') {
       timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '7 days'`;
     } else if (range === '1m') {
