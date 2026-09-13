@@ -50,12 +50,21 @@ export default async function globalSetup() {
       "FinInstrmId" VARCHAR(50),
       record_date   TIMESTAMP WITHOUT TIME ZONE,
       open_price    NUMERIC,
+      high_price    NUMERIC,
+      low_price     NUMERIC,
       close_price   NUMERIC,
+      volume        BIGINT,
       -- Official exchange previous close, written by the scraper onto the
       -- session's own rows (db/migrations/0011). Day-change is measured
       -- against this, falling back to the prior day's close when it's absent.
       prev_close    NUMERIC
     )`);
+  await db.query(`
+    ALTER TABLE historical_prices
+      ADD COLUMN IF NOT EXISTS high_price NUMERIC,
+      ADD COLUMN IF NOT EXISTS low_price  NUMERIC,
+      ADD COLUMN IF NOT EXISTS volume     BIGINT
+  `);
   await db.query(
     `CREATE INDEX IF NOT EXISTS idx_hist_fininstrm
      ON historical_prices ("FinInstrmId", record_date)`

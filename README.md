@@ -90,6 +90,8 @@ deploy/
 | `nse_indices` | `sodhaniScrap` NSE indices worker (NIFTY 50, BANK, FIN SERVICE, FPI 150, MID SELECT, NEXT 50) | `/api/indices`, `/api/indices/:code/history` |
 | `nse_index_history` | `sodhaniScrap` NSE indices worker (daily-close + intraday-tick series, plus market breadth) | `/api/indices`, `/api/indices/:code/history` |
 | `nse_index_constituents` | `sodhaniScrap` NSE indices worker (full constituent list per index) | `/api/indices/:code/constituents` |
+| `bse_volume_history` | `sodhaniScrap` daily Bhavcopy volume worker / backfill | `/api/volume/:symbol`, `/api/quote/:symbol` |
+| `nse_volume_history` | `sodhaniScrap` daily Bhavcopy volume worker / backfill | `/api/volume/:symbol`, `/api/quote/:symbol` |
 
 **Important scope note:** `bse_top_gainers_losers` and `bse_spurt_volume` cover the *entire* BSE live market — any listed stock can show up there. `company_stock`/`historical_prices` only cover the fixed watchlist in `sodhaniScrap`'s `companies.json` (`bse_only` list). So a ticker that appears in `/api/top-gainers` today (e.g. some small-cap that hit its circuit) may return `404` from `/api/quote` or `/api/history` if it isn't in that watchlist. This is expected — to fix it, the watchlist in `sodhaniScrap` itself would need to be expanded, not this API.
 
@@ -302,7 +304,13 @@ GET /api/quote/ANDHRAPET
   "LowPric": "...",
   "ClosePric": "...",
   "ChangeVal": "...",
-  "ChangePercent": "..."
+  "ChangePercent": "...",
+  "CombinedVolume": "...",
+  "BseVolume": "...",
+  "NseVolume": "...",
+  "DeliveryQty": "...",
+  "DeliveryPct": "...",
+  "IsDualListed": true
 }
 ```
 
@@ -310,6 +318,12 @@ GET /api/quote/ANDHRAPET
 - `TtlTradgVol` — `SUM(volume)` across that latest day's `historical_prices` rows.
 - `TtlTrfVal` — approximated turnover, `TtlTradgVol × ClosePric` (`historical_prices` has no direct turnover column).
 - `TradDt` — the latest `record_date` found in `historical_prices` for this instrument (replaces the old separate `TradDt`/`BizDt`/`ISIN`/`SctySrs`/`Sgmt`/`TtlNbOfTxsExctd` fields, which are no longer returned).
+- `CombinedVolume` — latest trading day volume aggregated across BSE and NSE for dual-listed companies (or single-exchange volume if not dual-listed).
+- `BseVolume` — BSE volume for the latest trading day (from `bse_volume_history`).
+- `NseVolume` — NSE volume for the latest trading day (from `nse_volume_history`, `null` if not listed on NSE).
+- `DeliveryQty` — latest combined deliverable quantity (`null` if delivery data is not available).
+- `DeliveryPct` — volume-weighted delivery percentage across exchanges (`(DeliveryQty / CombinedVolume) * 100`).
+- `IsDualListed` — boolean indicating whether the stock is traded on both BSE and NSE.
 - If the instrument has no `historical_prices` rows yet (e.g. newly added to the watchlist, not yet backfilled), these fields come back `null`.
 
 **404** if the symbol/scrip code isn't in the tracked watchlist:
@@ -401,6 +415,89 @@ GET /api/history/500012?range=1y&chartType=candlestick
 ```
 
 **404** if there's no history for that symbol.
+
+---
+
+### `GET /api/volume/:symbol`
+
+Volume and delivery history for one instrument, ordered chronologically (`DESC` or `ASC`).
+For dual-listed companies (traded on both BSE and NSE), the API combines volume and delivery statistics across both exchanges, while also providing per-exchange breakdowns (`bse` and `nse`).
+
+Time-based bucketing and downsampling are applied dynamically based on the requested range:
+- Daily resolution for ranges `< 1y` (e.g. `1d`, `1w`, `1m`).
+- Weekly resolution (`date_trunc('week')`) for `1y`.
+- For `5y` and `max`, raw daily history is retrieved and downsampled via the Largest-Triangle-Three-Buckets (LTTB) algorithm into ~100 suitable bars (preserving volume spikes and actual daily metrics instead of crude lumps).
+- Algorithmic downsampling via LTTB also applies whenever `chartType=line` with `> 100` points.
+
+| Query param | Default | Max | Description |
+|---|---|---|---|
+| `range` | `1m` | - | One of `1d`, `1w`, `1m`, `1y`, `5y`, `max`. Mutually exclusive with `start_date`/`end_date`. |
+| `start_date` | - | - | YYYY-MM-DD. Requires `end_date`. |
+| `end_date` | - | - | YYYY-MM-DD. Requires `start_date`. |
+| `chartType` | `candlestick` | - | Either `candlestick` (returns full volume metrics including delivery and exchange breakdowns) or `line` (applies LTTB downsampling returning `time` and `combined_volume`). |
+| `limit` | - | 5000 | Optional cap on maximum records returned. |
+
+**Example**
+```
+GET /api/volume/500002?range=1y&chartType=candlestick
+GET /api/volume/ABB?range=1m
+```
+
+**Response (chartType=candlestick / default)**
+```json
+{
+  "symbol": "500002",
+  "is_dual_listed": true,
+  "exchange_codes": {
+    "bse": "500002",
+    "nse": "ABB"
+  },
+  "count": 52,
+  "history": [
+    {
+      "time": "2026-09-07",
+      "combined_volume": "1250430",
+      "combined_delivery_qty": "785200",
+      "combined_delivery_pct": "62.80",
+      "combined_turnover": "104523000.00",
+      "bse": {
+        "volume": "150430",
+        "delivery_qty": "85200",
+        "delivery_pct": "56.64",
+        "turnover": "12523000.00"
+      },
+      "nse": {
+        "volume": "1100000",
+        "delivery_qty": "700000",
+        "delivery_pct": "63.64",
+        "turnover": "92000000.00"
+      }
+    }
+  ]
+}
+```
+
+**Response (chartType=line)**
+```json
+{
+  "symbol": "500002",
+  "is_dual_listed": true,
+  "count": 100,
+  "history": [
+    {
+      "time": "2026-09-07",
+      "combined_volume": 1250430
+    }
+  ]
+}
+```
+
+**Notes on Calculations & Field Nullability:**
+- For BSE-only or NSE-only stocks, `is_dual_listed` is `false`, and the missing exchange breakdown is `null`. `combined_volume` matches the single listed exchange's volume.
+- Delivery quantities and delivery percentages are derived from daily Bhavcopies. For older historical data backfilled prior to Bhavcopy tracking (e.g. from Yahoo Finance historical backfill), delivery metrics return `null`.
+- When bucketing over weeks or months, `combined_delivery_pct` is properly **volume-weighted**: `(SUM(delivery_qty) / SUM(volume)) * 100`.
+
+**404** if the symbol is not recognized in BSE or NSE mappings, or if no volume history exists for it.
 
 ---
 

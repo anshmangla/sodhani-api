@@ -339,7 +339,55 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
     res.status(404).json({ error: `No quote found for symbol '${symbol}'` });
     return;
   }
-  res.json(result.rows[0]);
+  const quote = result.rows[0];
+
+  // Enrich with latest Bhavcopy combined volume & delivery statistics
+  try {
+    const resolved = await resolveExchangeCodes(symbol);
+    if (resolved && (resolved.bseCode || resolved.nseSymbol)) {
+      const volRes = await pool.query(`
+        SELECT 
+          (COALESCE(b.volume, 0) + COALESCE(n.volume, 0)) AS combined_volume,
+          CASE 
+            WHEN b.delivery_qty IS NOT NULL OR n.delivery_qty IS NOT NULL 
+            THEN (COALESCE(b.delivery_qty, 0) + COALESCE(n.delivery_qty, 0))
+            ELSE NULL 
+          END AS combined_delivery_qty,
+          CASE 
+            WHEN (COALESCE(b.volume, 0) + COALESCE(n.volume, 0)) > 0 AND (b.delivery_qty IS NOT NULL OR n.delivery_qty IS NOT NULL)
+            THEN ROUND(((COALESCE(b.delivery_qty, 0) + COALESCE(n.delivery_qty, 0))::numeric / (COALESCE(b.volume, 0) + COALESCE(n.volume, 0))::numeric) * 100, 2)
+            ELSE NULL 
+          END AS combined_delivery_pct,
+          b.volume as bse_volume,
+          n.volume as nse_volume
+        FROM (
+          SELECT MAX(record_date) as latest_date
+          FROM (
+            SELECT MAX(record_date) as record_date FROM bse_volume_history WHERE scrip_cd = $1
+            UNION ALL
+            SELECT MAX(record_date) as record_date FROM nse_volume_history WHERE symbol = $2
+          ) sub
+        ) d
+        LEFT JOIN bse_volume_history b ON b.scrip_cd = $1 AND b.record_date = d.latest_date
+        LEFT JOIN nse_volume_history n ON n.symbol = $2 AND n.record_date = d.latest_date
+        LIMIT 1
+      `, [resolved.bseCode, resolved.nseSymbol]);
+
+      if (volRes.rows.length > 0 && volRes.rows[0].combined_volume !== null) {
+        const v = volRes.rows[0];
+        quote.CombinedVolume = Number(v.combined_volume);
+        quote.BseVolume = v.bse_volume !== null ? Number(v.bse_volume) : null;
+        quote.NseVolume = v.nse_volume !== null ? Number(v.nse_volume) : null;
+        quote.DeliveryQty = v.combined_delivery_qty !== null ? Number(v.combined_delivery_qty) : null;
+        quote.DeliveryPct = v.combined_delivery_pct !== null ? Number(v.combined_delivery_pct) : null;
+        quote.IsDualListed = resolved.isDualListed;
+      }
+    }
+  } catch (e: any) {
+    console.warn('Failed to attach volume metrics to quote:', e.message);
+  }
+
+  res.json(quote);
 }));
 
 const MAX_BATCH_QUOTE_CODES = 50;
@@ -774,6 +822,523 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
       "all": { high: extremesRow.high_all !== null ? Number(extremesRow.high_all) : null, low: extremesRow.low_all !== null ? Number(extremesRow.low_all) : null }
     } : null,
     history 
+  });
+}));
+
+interface ExchangeResolved {
+  bseCode: string | null;
+  nseSymbol: string | null;
+  name: string | null;
+  isDualListed: boolean;
+}
+
+interface ExchangeMappings {
+  bse_only?: string[];
+  nse_only?: string[];
+  bse_to_nse?: Record<string, string>;
+  nse_to_bse?: Record<string, string>;
+}
+
+let cachedExchangeMappings: ExchangeMappings | null = null;
+
+async function getExchangeMappings(): Promise<ExchangeMappings> {
+  if (cachedExchangeMappings) return cachedExchangeMappings;
+  try {
+    const mappingsPath = path.resolve(__dirname, '../../exchange_code_mappings.json');
+    const data = await fs.readFile(mappingsPath, 'utf8');
+    cachedExchangeMappings = JSON.parse(data);
+    return cachedExchangeMappings!;
+  } catch {
+    return {};
+  }
+}
+
+async function resolveExchangeCodes(rawSymbol: string): Promise<ExchangeResolved | null> {
+  const query = rawSymbol.trim().toUpperCase();
+  if (!query || !VALID_QUERY_REGEX.test(query)) return null;
+
+  const mappings = await getExchangeMappings();
+
+  // 1. Direct query in company_stock
+  const csRes = await pool.query(
+    `SELECT "FinInstrmId", "TckrSymb", "FinInstrmNm"
+     FROM company_stock
+     WHERE UPPER("TckrSymb") = $1 OR "FinInstrmId"::text = $1
+     LIMIT 1`,
+    [query]
+  );
+
+  let bseCode: string | null = null;
+  let nseSymbol: string | null = null;
+  let name: string | null = null;
+
+  if (csRes.rows.length > 0) {
+    const row = csRes.rows[0];
+    name = row.FinInstrmNm || null;
+    const isBseCode = /^\d{6}$/.test(row.FinInstrmId);
+
+    if (isBseCode) {
+      const code = String(row.FinInstrmId);
+      bseCode = code;
+      if (mappings.bse_only?.includes(code)) {
+        nseSymbol = null;
+      } else {
+        nseSymbol = mappings.bse_to_nse?.[code] || null;
+        if (!nseSymbol && row.TckrSymb) {
+          const candidate = row.TckrSymb.replace(/\.(NS|BO)$/i, '').toUpperCase();
+          const nseCheck = await pool.query(`SELECT 1 FROM nse_volume_history WHERE symbol = $1 LIMIT 1`, [candidate]);
+          if (nseCheck.rows.length > 0) {
+            nseSymbol = candidate;
+          }
+        }
+      }
+    } else {
+      const sym = String(row.FinInstrmId);
+      nseSymbol = sym;
+      if (mappings.nse_only?.includes(sym)) {
+        bseCode = null;
+      } else {
+        bseCode = mappings.nse_to_bse?.[sym] || null;
+      }
+    }
+  } else {
+    // 2. Fallback via mappings
+    if (/^\d{6}$/.test(query)) {
+      bseCode = query;
+      nseSymbol = mappings.bse_only?.includes(query) ? null : (mappings.bse_to_nse?.[query] || null);
+    } else {
+      nseSymbol = query;
+      bseCode = mappings.nse_only?.includes(query) ? null : (mappings.nse_to_bse?.[query] || null);
+    }
+  }
+
+  // 3. Fallback check directly in volume history tables if not in company_stock
+  if (!bseCode && !nseSymbol) {
+    if (/^\d{6}$/.test(query)) {
+      const bseCheck = await pool.query(`SELECT 1 FROM bse_volume_history WHERE scrip_cd = $1 LIMIT 1`, [query]);
+      if (bseCheck.rows.length > 0) {
+        bseCode = query;
+        nseSymbol = mappings.bse_only?.includes(query) ? null : (mappings.bse_to_nse?.[query] || null);
+      }
+    } else {
+      const nseCheck = await pool.query(`SELECT 1 FROM nse_volume_history WHERE symbol = $1 LIMIT 1`, [query]);
+      if (nseCheck.rows.length > 0) {
+        nseSymbol = query;
+        bseCode = mappings.nse_only?.includes(query) ? null : (mappings.nse_to_bse?.[query] || null);
+      }
+    }
+  }
+
+  // 4. Resolve name if missing
+  if (!name && (bseCode || nseSymbol)) {
+    const nameRes = await pool.query(
+      `SELECT "FinInstrmNm" FROM company_stock 
+       WHERE "FinInstrmId" = $1 OR "FinInstrmId" = $2 OR UPPER("TckrSymb") = $2
+       LIMIT 1`,
+      [bseCode, nseSymbol]
+    );
+    if (nameRes.rows.length > 0) {
+      name = nameRes.rows[0].FinInstrmNm;
+    }
+  }
+
+  if (!bseCode && !nseSymbol) {
+    return null;
+  }
+
+  return {
+    bseCode,
+    nseSymbol,
+    name: name || query,
+    isDualListed: Boolean(bseCode && nseSymbol)
+  };
+}
+
+// GET /api/volume/:symbol?range=1m&chartType=bar
+// Fetches daily, weekly, or monthly aggregated volume and delivery history for a company.
+// For companies common in both BSE and NSE (dual-listed), returns combined volume and delivery metrics,
+// alongside individual exchange breakdowns.
+router.get('/volume/:symbol', asyncHandler(async (req, res) => {
+  const { symbol } = req.params;
+  if (!symbol || !VALID_QUERY_REGEX.test(symbol)) {
+    res.status(400).json({ error: 'Invalid symbol parameter' });
+    return;
+  }
+
+  const resolved = await resolveExchangeCodes(symbol);
+  if (!resolved) {
+    res.status(404).json({ error: `No company found matching symbol '${symbol}'` });
+    return;
+  }
+
+  const { bseCode, nseSymbol, name, isDualListed } = resolved;
+  const chartType = String(req.query.chartType || 'bar').toLowerCase();
+  let rawRange = String(req.query.range || req.query.query || '1m').toLowerCase();
+
+  const startDate = req.query.start_date ? String(req.query.start_date).trim() : null;
+  const endDate = req.query.end_date ? String(req.query.end_date).trim() : null;
+
+  let timeFilter = '';
+  let durationDays = 30; // default for 1m
+  let range = rawRange;
+
+  const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+  if (startDate || endDate) {
+    if (!startDate || !endDate || !ISO_DATE_REGEX.test(startDate) || !ISO_DATE_REGEX.test(endDate)) {
+      res.status(400).json({ error: 'start_date and end_date must both be valid ISO dates (YYYY-MM-DD)' });
+      return;
+    }
+    const startTs = new Date(startDate).getTime();
+    const endTs = new Date(endDate).getTime();
+    if (Number.isNaN(startTs) || Number.isNaN(endTs) || startTs > endTs) {
+      res.status(400).json({ error: 'start_date must be less than or equal to end_date' });
+      return;
+    }
+    range = 'custom';
+    durationDays = (endTs - startTs) / (1000 * 3600 * 24);
+    timeFilter = `AND record_date >= $3 AND record_date <= $4`;
+  } else {
+    if (['d', '1d'].includes(rawRange)) { range = '1d'; durationDays = 1; }
+    else if (['w', '1w'].includes(rawRange)) { range = '1w'; durationDays = 7; }
+    else if (['m', '1m'].includes(rawRange)) { range = '1m'; durationDays = 30; }
+    else if (['y', '1y'].includes(rawRange)) { range = '1y'; durationDays = 365; }
+    else if (['5y'].includes(rawRange)) { range = '5y'; durationDays = 365 * 5; }
+    else if (['max', 'all'].includes(rawRange)) { range = 'max'; durationDays = 99999; }
+    else { range = '1m'; durationDays = 30; }
+
+    if (range === '1d') {
+      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte)`;
+    } else if (range === '1w') {
+      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '7 days'`;
+    } else if (range === '1m') {
+      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '1 month'`;
+    } else if (range === '1y') {
+      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '1 year'`;
+    } else if (range === '5y') {
+      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '5 years'`;
+    }
+  }
+
+  const limit = ['max', '5y'].includes(range)
+    ? clampLimit(req.query.limit, 5000, 10000)
+    : clampLimit(req.query.limit, 1000, 5000);
+  const downsample = req.query.downsample
+    ? clampLimit(req.query.downsample, 20, 500)
+    : 100;
+
+  const queryParams: any[] = [bseCode, nseSymbol];
+  if (range === 'custom') {
+    queryParams.push(startDate, endDate);
+  }
+  queryParams.push(limit);
+  const limitPlaceholder = `$${queryParams.length}`;
+
+  let sql = '';
+
+  if (['max', '5y'].includes(range) || durationDays < 365) {
+    // 1. Raw Daily Data (for 1d, 1w, 1m, custom < 1 year, 5y, or max downsampled algorithmically)
+    sql = `
+      WITH max_date_cte AS (
+        SELECT MAX(m) as max_date
+        FROM (
+          SELECT MAX(record_date) as m FROM bse_volume_history WHERE scrip_cd = $1
+          UNION ALL
+          SELECT MAX(record_date) as m FROM nse_volume_history WHERE symbol = $2
+        ) sub
+      ),
+      dates AS (
+        SELECT DISTINCT record_date
+        FROM (
+          SELECT record_date FROM bse_volume_history WHERE scrip_cd = $1
+          UNION
+          SELECT record_date FROM nse_volume_history WHERE symbol = $2
+        ) d
+        WHERE 1=1 ${timeFilter}
+        ORDER BY record_date DESC
+        LIMIT ${limitPlaceholder}
+      )
+      SELECT 
+        to_char(d.record_date, 'YYYY-MM-DD') as record_date,
+        (COALESCE(b.volume, 0) + COALESCE(n.volume, 0)) AS combined_volume,
+        CASE 
+          WHEN b.delivery_qty IS NOT NULL OR n.delivery_qty IS NOT NULL 
+          THEN (COALESCE(b.delivery_qty, 0) + COALESCE(n.delivery_qty, 0))
+          ELSE NULL 
+        END AS combined_delivery_qty,
+        CASE 
+          WHEN (COALESCE(b.volume, 0) + COALESCE(n.volume, 0)) > 0 AND (b.delivery_qty IS NOT NULL OR n.delivery_qty IS NOT NULL)
+          THEN ROUND(((COALESCE(b.delivery_qty, 0) + COALESCE(n.delivery_qty, 0))::numeric / (COALESCE(b.volume, 0) + COALESCE(n.volume, 0))::numeric) * 100, 2)
+          ELSE NULL 
+        END AS combined_delivery_pct,
+        CASE 
+          WHEN b.turnover IS NOT NULL OR n.turnover IS NOT NULL 
+          THEN (COALESCE(b.turnover, 0) + COALESCE(n.turnover, 0))
+          ELSE NULL 
+        END AS combined_turnover,
+        b.volume as bse_volume,
+        b.delivery_qty as bse_delivery_qty,
+        b.delivery_val as bse_delivery_val,
+        b.turnover as bse_turnover,
+        b.delivery_pct as bse_delivery_pct,
+        n.series as nse_series,
+        n.volume as nse_volume,
+        n.delivery_qty as nse_delivery_qty,
+        n.turnover as nse_turnover,
+        n.delivery_pct as nse_delivery_pct,
+        n.no_of_trades as nse_trades
+      FROM dates d
+      LEFT JOIN bse_volume_history b ON b.scrip_cd = $1 AND b.record_date = d.record_date
+      LEFT JOIN nse_volume_history n ON n.symbol = $2 AND n.record_date = d.record_date
+      ORDER BY d.record_date DESC
+    `;
+  } else if (durationDays <= 365 * 5) {
+    // 2. Weekly Buckets (1y to 5y)
+    sql = `
+      WITH max_date_cte AS (
+        SELECT MAX(m) as max_date
+        FROM (
+          SELECT MAX(record_date) as m FROM bse_volume_history WHERE scrip_cd = $1
+          UNION ALL
+          SELECT MAX(record_date) as m FROM nse_volume_history WHERE symbol = $2
+        ) sub
+      ),
+      combined_daily AS (
+        SELECT 
+          d.record_date,
+          (COALESCE(b.volume, 0) + COALESCE(n.volume, 0)) AS combined_volume,
+          CASE 
+            WHEN b.delivery_qty IS NOT NULL OR n.delivery_qty IS NOT NULL 
+            THEN (COALESCE(b.delivery_qty, 0) + COALESCE(n.delivery_qty, 0))
+            ELSE NULL 
+          END AS combined_delivery_qty,
+          CASE 
+            WHEN b.turnover IS NOT NULL OR n.turnover IS NOT NULL 
+            THEN (COALESCE(b.turnover, 0) + COALESCE(n.turnover, 0))
+            ELSE NULL 
+          END AS combined_turnover,
+          b.volume as bse_volume,
+          b.delivery_qty as bse_delivery_qty,
+          b.delivery_val as bse_delivery_val,
+          b.turnover as bse_turnover,
+          n.series as nse_series,
+          n.volume as nse_volume,
+          n.delivery_qty as nse_delivery_qty,
+          n.turnover as nse_turnover,
+          n.no_of_trades as nse_trades
+        FROM (
+          SELECT DISTINCT record_date
+          FROM (
+            SELECT record_date FROM bse_volume_history WHERE scrip_cd = $1
+            UNION
+            SELECT record_date FROM nse_volume_history WHERE symbol = $2
+          ) sub
+          WHERE 1=1 ${timeFilter}
+        ) d
+        LEFT JOIN bse_volume_history b ON b.scrip_cd = $1 AND b.record_date = d.record_date
+        LEFT JOIN nse_volume_history n ON n.symbol = $2 AND n.record_date = d.record_date
+      )
+      SELECT 
+        to_char(date_trunc('week', record_date), 'YYYY-MM-DD') as record_date,
+        SUM(combined_volume) as combined_volume,
+        CASE WHEN COUNT(combined_delivery_qty) > 0 THEN SUM(combined_delivery_qty) ELSE NULL END as combined_delivery_qty,
+        CASE 
+          WHEN SUM(combined_volume) > 0 AND COUNT(combined_delivery_qty) > 0
+          THEN ROUND((SUM(combined_delivery_qty)::numeric / SUM(combined_volume)::numeric) * 100, 2)
+          ELSE NULL 
+        END as combined_delivery_pct,
+        CASE WHEN COUNT(combined_turnover) > 0 THEN SUM(combined_turnover) ELSE NULL END as combined_turnover,
+        SUM(bse_volume) as bse_volume,
+        CASE WHEN COUNT(bse_delivery_qty) > 0 THEN SUM(bse_delivery_qty) ELSE NULL END as bse_delivery_qty,
+        CASE WHEN COUNT(bse_delivery_val) > 0 THEN SUM(bse_delivery_val) ELSE NULL END as bse_delivery_val,
+        CASE WHEN COUNT(bse_turnover) > 0 THEN SUM(bse_turnover) ELSE NULL END as bse_turnover,
+        CASE 
+          WHEN SUM(bse_volume) > 0 AND COUNT(bse_delivery_qty) > 0
+          THEN ROUND((SUM(bse_delivery_qty)::numeric / SUM(bse_volume)::numeric) * 100, 2)
+          ELSE NULL 
+        END as bse_delivery_pct,
+        SUM(nse_volume) as nse_volume,
+        CASE WHEN COUNT(nse_delivery_qty) > 0 THEN SUM(nse_delivery_qty) ELSE NULL END as nse_delivery_qty,
+        CASE WHEN COUNT(nse_turnover) > 0 THEN SUM(nse_turnover) ELSE NULL END as nse_turnover,
+        CASE 
+          WHEN SUM(nse_volume) > 0 AND COUNT(nse_delivery_qty) > 0
+          THEN ROUND((SUM(nse_delivery_qty)::numeric / SUM(nse_volume)::numeric) * 100, 2)
+          ELSE NULL 
+        END as nse_delivery_pct,
+        CASE WHEN COUNT(nse_trades) > 0 THEN SUM(nse_trades) ELSE NULL END as nse_trades
+      FROM combined_daily
+      GROUP BY date_trunc('week', record_date)
+      ORDER BY record_date DESC
+      LIMIT ${limitPlaceholder}
+    `;
+  } else {
+    // 3. Monthly Buckets (> 5y / max)
+    sql = `
+      WITH max_date_cte AS (
+        SELECT MAX(m) as max_date
+        FROM (
+          SELECT MAX(record_date) as m FROM bse_volume_history WHERE scrip_cd = $1
+          UNION ALL
+          SELECT MAX(record_date) as m FROM nse_volume_history WHERE symbol = $2
+        ) sub
+      ),
+      combined_daily AS (
+        SELECT 
+          d.record_date,
+          (COALESCE(b.volume, 0) + COALESCE(n.volume, 0)) AS combined_volume,
+          CASE 
+            WHEN b.delivery_qty IS NOT NULL OR n.delivery_qty IS NOT NULL 
+            THEN (COALESCE(b.delivery_qty, 0) + COALESCE(n.delivery_qty, 0))
+            ELSE NULL 
+          END AS combined_delivery_qty,
+          CASE 
+            WHEN b.turnover IS NOT NULL OR n.turnover IS NOT NULL 
+            THEN (COALESCE(b.turnover, 0) + COALESCE(n.turnover, 0))
+            ELSE NULL 
+          END AS combined_turnover,
+          b.volume as bse_volume,
+          b.delivery_qty as bse_delivery_qty,
+          b.delivery_val as bse_delivery_val,
+          b.turnover as bse_turnover,
+          n.series as nse_series,
+          n.volume as nse_volume,
+          n.delivery_qty as nse_delivery_qty,
+          n.turnover as nse_turnover,
+          n.no_of_trades as nse_trades
+        FROM (
+          SELECT DISTINCT record_date
+          FROM (
+            SELECT record_date FROM bse_volume_history WHERE scrip_cd = $1
+            UNION
+            SELECT record_date FROM nse_volume_history WHERE symbol = $2
+          ) sub
+          WHERE 1=1 ${timeFilter}
+        ) d
+        LEFT JOIN bse_volume_history b ON b.scrip_cd = $1 AND b.record_date = d.record_date
+        LEFT JOIN nse_volume_history n ON n.symbol = $2 AND n.record_date = d.record_date
+      )
+      SELECT 
+        date_trunc('month', record_date) as record_date,
+        SUM(combined_volume) as combined_volume,
+        CASE WHEN COUNT(combined_delivery_qty) > 0 THEN SUM(combined_delivery_qty) ELSE NULL END as combined_delivery_qty,
+        CASE 
+          WHEN SUM(combined_volume) > 0 AND COUNT(combined_delivery_qty) > 0
+          THEN ROUND((SUM(combined_delivery_qty)::numeric / SUM(combined_volume)::numeric) * 100, 2)
+          ELSE NULL 
+        END as combined_delivery_pct,
+        CASE WHEN COUNT(combined_turnover) > 0 THEN SUM(combined_turnover) ELSE NULL END as combined_turnover,
+        SUM(bse_volume) as bse_volume,
+        CASE WHEN COUNT(bse_delivery_qty) > 0 THEN SUM(bse_delivery_qty) ELSE NULL END as bse_delivery_qty,
+        CASE WHEN COUNT(bse_delivery_val) > 0 THEN SUM(bse_delivery_val) ELSE NULL END as bse_delivery_val,
+        CASE WHEN COUNT(bse_turnover) > 0 THEN SUM(bse_turnover) ELSE NULL END as bse_turnover,
+        CASE 
+          WHEN SUM(bse_volume) > 0 AND COUNT(bse_delivery_qty) > 0
+          THEN ROUND((SUM(bse_delivery_qty)::numeric / SUM(bse_volume)::numeric) * 100, 2)
+          ELSE NULL 
+        END as bse_delivery_pct,
+        SUM(nse_volume) as nse_volume,
+        CASE WHEN COUNT(nse_delivery_qty) > 0 THEN SUM(nse_delivery_qty) ELSE NULL END as nse_delivery_qty,
+        CASE WHEN COUNT(nse_turnover) > 0 THEN SUM(nse_turnover) ELSE NULL END as nse_turnover,
+        CASE 
+          WHEN SUM(nse_volume) > 0 AND COUNT(nse_delivery_qty) > 0
+          THEN ROUND((SUM(nse_delivery_qty)::numeric / SUM(nse_volume)::numeric) * 100, 2)
+          ELSE NULL 
+        END as nse_delivery_pct,
+        CASE WHEN COUNT(nse_trades) > 0 THEN SUM(nse_trades) ELSE NULL END as nse_trades
+      FROM combined_daily
+      GROUP BY date_trunc('month', record_date)
+      ORDER BY record_date DESC
+      LIMIT ${limitPlaceholder}
+    `;
+  }
+
+  const result = await pool.query(sql, queryParams);
+  if (result.rows.length === 0) {
+    res.status(404).json({ error: `No volume history found for symbol '${symbol}'` });
+    return;
+  }
+
+  let rawHistory = result.rows;
+
+  const shouldDownsample = (chartType === 'line' || ['max', '5y'].includes(range)) && rawHistory.length > downsample;
+  if (shouldDownsample) {
+    rawHistory.reverse();
+    rawHistory = lttb(
+      rawHistory,
+      downsample,
+      (d) => new Date(d.record_date).getTime(),
+      (d) => Number(d.combined_volume || 0)
+    );
+    rawHistory.reverse();
+  }
+
+  const volumes = rawHistory.map((r: any) => Number(r.combined_volume || 0));
+  const highVolume = volumes.length > 0 ? Math.max(...volumes) : 0;
+  const lowVolume = volumes.length > 0 ? Math.min(...volumes) : 0;
+  const totalVolume = volumes.reduce((acc: number, v: number) => acc + v, 0);
+  const avgVolume = volumes.length > 0 ? Math.round(totalVolume / volumes.length) : 0;
+
+  const latestVol = Number(rawHistory[0]?.combined_volume || 0);
+  const earliestVol = Number(rawHistory[rawHistory.length - 1]?.combined_volume || 0);
+  const changePercent = earliestVol > 0 ? Number((((latestVol - earliestVol) / earliestVol) * 100).toFixed(2)) : 0;
+
+  const formattedHistory = rawHistory.map((row: any) => {
+    const dStr = new Date(row.record_date).toISOString().split('T')[0];
+    if (chartType === 'line') {
+      return {
+        time: dStr,
+        record_date: dStr,
+        combined_volume: Number(row.combined_volume || 0),
+      };
+    }
+    return {
+      time: dStr,
+      record_date: dStr,
+      combined_volume: Number(row.combined_volume || 0),
+      combined_delivery_qty: row.combined_delivery_qty !== null ? Number(row.combined_delivery_qty) : null,
+      combined_delivery_pct: row.combined_delivery_pct !== null ? Number(row.combined_delivery_pct) : null,
+      combined_turnover: row.combined_turnover !== null ? Number(row.combined_turnover) : null,
+      bse: bseCode && row.bse_volume !== null ? {
+        scrip_cd: bseCode,
+        volume: Number(row.bse_volume),
+        delivery_qty: row.bse_delivery_qty !== null ? Number(row.bse_delivery_qty) : null,
+        delivery_val: row.bse_delivery_val !== null ? Number(row.bse_delivery_val) : null,
+        turnover: row.bse_turnover !== null ? Number(row.bse_turnover) : null,
+        delivery_pct: row.bse_delivery_pct !== null ? Number(row.bse_delivery_pct) : null,
+      } : null,
+      nse: nseSymbol && row.nse_volume !== null ? {
+        symbol: nseSymbol,
+        series: row.nse_series || 'EQ',
+        volume: Number(row.nse_volume),
+        delivery_qty: row.nse_delivery_qty !== null ? Number(row.nse_delivery_qty) : null,
+        turnover: row.nse_turnover !== null ? Number(row.nse_turnover) : null,
+        delivery_pct: row.nse_delivery_pct !== null ? Number(row.nse_delivery_pct) : null,
+        no_of_trades: row.nse_trades !== null ? Number(row.nse_trades) : null,
+      } : null,
+    };
+  });
+
+  const latestSnapshot = formattedHistory[0] ? { ...formattedHistory[0] } : null;
+
+  res.json({
+    symbol: symbol.toUpperCase(),
+    name,
+    bse_code: bseCode,
+    nse_symbol: nseSymbol,
+    exchange_codes: {
+      bse: bseCode,
+      nse: nseSymbol
+    },
+    is_dual_listed: isDualListed,
+    range,
+    chartType,
+    count: formattedHistory.length,
+    high_volume: highVolume,
+    low_volume: lowVolume,
+    avg_volume: avgVolume,
+    total_volume: totalVolume,
+    change_percent: changePercent,
+    latest: latestSnapshot,
+    history: formattedHistory
   });
 }));
 
@@ -1259,7 +1824,7 @@ router.get('/metrics/:symbol', asyncHandler(async (req, res) => {
   let tckrSymb = symbol;
   if (csResult.rows.length > 0) {
      finId = csResult.rows[0].FinInstrmId ? csResult.rows[0].FinInstrmId.toString() : '';
-     tckrSymb = csResult.rows[0].TckrSymb.replace(/\.(NS|BO)$/i, '');
+     tckrSymb = csResult.rows[0].TckrSymb ? csResult.rows[0].TckrSymb.replace(/\.(NS|BO)$/i, '') : symbol;
   }
 
   const result = await pool.query(
