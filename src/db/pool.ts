@@ -12,6 +12,11 @@ dotenv.config();
 // remember an explicit ::float8/::int cast.
 types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)));
 types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)));
+// DATE (OID 1082) defaults to a JS Date, which re-serializes with a spurious
+// time/zone component (e.g. `research_calls.expiry_date`). These columns are
+// plain calendar dates with no time component of their own — keep them as the
+// `YYYY-MM-DD` string Postgres already hands back before parsing.
+types.setTypeParser(1082, (val) => val);
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,

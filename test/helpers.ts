@@ -30,6 +30,17 @@ export async function clearWatchlistData(): Promise<void> {
   await testPool.query('DELETE FROM watchlist_items');
 }
 
+// Clear all RA-calls data between tests (users/RAs + market data persist).
+// Deleted in FK-dependency order: ra_transfers/purchased_calls/call_comments
+// all reference research_calls, and purchased_calls also references payments.
+export async function clearCallsData(): Promise<void> {
+  await testPool.query('DELETE FROM ra_transfers');
+  await testPool.query('DELETE FROM purchased_calls');
+  await testPool.query('DELETE FROM call_comments');
+  await testPool.query('DELETE FROM payments');
+  await testPool.query('DELETE FROM research_calls');
+}
+
 export async function closeTestPool(): Promise<void> {
   await testPool.end();
 }

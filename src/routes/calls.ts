@@ -48,6 +48,9 @@ function buildPreviewPayload(row: any, purchased: boolean) {
     id: row.id,
     scrip_code: row.scrip_code,
     company_name: row.company_name,
+    // Safe to show on a locked card — tells an investor "this is an Options
+    // call" without revealing the contract (strike/expiry/CE-PE) or advice.
+    instrument_type: row.instrument_type,
     is_paid: row.is_paid,
     price_paise: row.price_paise,
     status: row.status,
@@ -60,17 +63,25 @@ function buildPreviewPayload(row: any, purchased: boolean) {
 }
 
 // `recommendation` (Buy/Sell/Hold) is the paywalled advice itself — it only
-// ever goes out once a caller is entitled, never in the locked preview.
+// ever goes out once a caller is entitled, never in the locked preview. The
+// full F&O contract identity (expiry/strike/option_type) and the entry price
+// travel with it, same rule.
 function buildFullPayload(row: any, purchased: boolean) {
   return {
     ...buildPreviewPayload(row, purchased),
     recommendation: row.recommendation,
+    expiry_date: row.expiry_date,
+    strike_price: row.strike_price,
+    option_type: row.option_type,
     current_price_at_publish: row.current_price_at_publish,
     volume_at_publish: row.volume_at_publish,
+    entry_price_min: row.entry_price_min,
+    entry_price_max: row.entry_price_max,
     target_price: row.target_price,
     stop_loss: row.stop_loss,
     buying_range: row.buying_range,
     holding_period: row.holding_period,
+    description: row.description,
     updated_at: row.updated_at,
   };
 }

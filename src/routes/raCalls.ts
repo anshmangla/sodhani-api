@@ -3,6 +3,7 @@ import { pool } from '../db/pool';
 import { requireRaAuth } from '../auth/raMiddleware';
 import { searchCompanies } from '../data/companies';
 import { getEarningsSummary, getRecentPayouts, getEarningsByCall } from '../services/raTransfersService';
+import { parseCallInput } from '../validation/callInput';
 
 const router = Router();
 
@@ -12,8 +13,6 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
   };
 }
 
-const VALID_RECOMMENDATIONS = ['Buy', 'Hold', 'Sell'];
-const SCRIP_CODE_REGEX = /^[A-Za-z0-9._\-&]{1,32}$/;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isValidUuid(id: string): boolean {
@@ -29,80 +28,41 @@ router.get('/companies', asyncHandler(async (req, res) => {
 
 // POST /api/ra/calls
 router.post('/calls', requireRaAuth, asyncHandler(async (req, res) => {
-  const {
-    scrip_code,
-    company_name,
-    recommendation,
-    target_price,
-    stop_loss,
-    buying_range,
-    holding_period,
-    is_paid,
-    price_paise,
-    current_price_at_publish,
-    volume_at_publish,
-  } = req.body ?? {};
-
-  if (typeof scrip_code !== 'string' || !SCRIP_CODE_REGEX.test(scrip_code.trim())) {
-    res.status(400).json({ error: 'Valid scrip_code is required (alphanumeric, up to 32 characters)' });
+  const parsed = parseCallInput(req.body);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
     return;
   }
-  if (typeof company_name !== 'string' || company_name.trim().length === 0 || company_name.length > 255) {
-    res.status(400).json({ error: 'company_name is required (up to 255 characters)' });
-    return;
-  }
-  if (typeof recommendation !== 'string' || !VALID_RECOMMENDATIONS.includes(recommendation)) {
-    res.status(400).json({ error: "recommendation must be one of 'Buy', 'Hold', 'Sell'" });
-    return;
-  }
-  if (typeof target_price !== 'number' || !Number.isFinite(target_price) || target_price <= 0 || target_price > 10000000) {
-    res.status(400).json({ error: 'target_price is required and must be a positive number' });
-    return;
-  }
-
-  const isPaid = is_paid === true;
-
-  let pricePaise: number | null = null;
-  if (isPaid) {
-    if (typeof price_paise !== 'number' || !Number.isInteger(price_paise) || price_paise < 100 || price_paise > 10000000) {
-      res.status(400).json({ error: 'price_paise is required and must be an integer between 100 and 10000000 when is_paid is true' });
-      return;
-    }
-    pricePaise = price_paise;
-  } else {
-    pricePaise = null;
-  }
-
-  const stopLoss = typeof stop_loss === 'number' && Number.isFinite(stop_loss) && stop_loss > 0 && stop_loss <= 10000000 ? stop_loss : null;
-  const currentPriceAtPublish =
-    typeof current_price_at_publish === 'number' && Number.isFinite(current_price_at_publish) && current_price_at_publish > 0
-      ? current_price_at_publish
-      : null;
-  const volumeAtPublish =
-    typeof volume_at_publish === 'number' && Number.isInteger(volume_at_publish) && volume_at_publish >= 0 ? volume_at_publish : null;
-  const buyingRange = typeof buying_range === 'string' && buying_range.length <= 100 ? buying_range : null;
-  const holdingPeriod = typeof holding_period === 'string' && holding_period.length <= 100 ? holding_period : null;
+  const v = parsed.value;
 
   const result = await pool.query(
     `INSERT INTO research_calls
-      (ra_id, scrip_code, company_name, recommendation, current_price_at_publish,
-       volume_at_publish, target_price, stop_loss, buying_range, holding_period,
-       is_paid, price_paise)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      (ra_id, scrip_code, company_name, recommendation, instrument_type, expiry_date,
+       strike_price, option_type, current_price_at_publish, volume_at_publish,
+       target_price, stop_loss, entry_price_min, entry_price_max, buying_range,
+       holding_period, description, is_paid, price_paise)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
      RETURNING *`,
     [
       req.authRaId,
-      scrip_code.trim(),
-      company_name.trim(),
-      recommendation,
-      currentPriceAtPublish,
-      volumeAtPublish,
-      target_price,
-      stopLoss,
-      buyingRange,
-      holdingPeriod,
-      isPaid,
-      pricePaise,
+      v.scripCode,
+      v.companyName,
+      v.recommendation,
+      v.instrumentType,
+      v.expiryDate,
+      v.strikePrice,
+      v.optionType,
+      v.currentPriceAtPublish,
+      v.volumeAtPublish,
+      v.targetPrice,
+      v.stopLoss,
+      v.entryPriceMin,
+      v.entryPriceMax,
+      v.buyingRange,
+      v.holdingPeriod,
+      v.description,
+      v.isPaid,
+      v.pricePaise,
     ]
   );
 
