@@ -533,10 +533,11 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
       const anchorDay = `COALESCE(
         (SELECT DATE_TRUNC('day', record_date) FROM historical_prices
          WHERE "FinInstrmId" = cs."FinInstrmId"
+           AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)
          GROUP BY DATE_TRUNC('day', record_date)
          HAVING COUNT(*) > 1
          ORDER BY DATE_TRUNC('day', record_date) DESC LIMIT 1),
-        (SELECT DATE_TRUNC('day', MAX(record_date)) FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId")
+        (SELECT DATE_TRUNC('day', MAX(record_date)) FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId" AND EXTRACT(DOW FROM record_date) NOT IN (0, 6))
       )`;
       // >= / < (not a plain >): a symbol whose only row for its anchor day
       // lands exactly at midnight (EOD-only ingestion) is neither before nor
@@ -544,15 +545,17 @@ router.get('/history/:symbol', asyncHandler(async (req, res) => {
       // strict `>` would exclude it entirely and 404 instead of returning
       // that day's data. The upper bound keeps a later, shadowed placeholder
       // day (see above) out of the result once the anchor is the real day.
-      timeFilter = `AND hp."record_date" >= ${anchorDay} AND hp."record_date" < ${anchorDay} + INTERVAL '1 day'`;
+      timeFilter = `AND hp."record_date" >= ${anchorDay} AND hp."record_date" < ${anchorDay} + INTERVAL '1 day' AND EXTRACT(DOW FROM hp."record_date") NOT IN (0, 6)`;
     } else if (range === '1w') {
-      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '7 days'`;
+      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId" AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)) - INTERVAL '7 days' AND EXTRACT(DOW FROM hp."record_date") NOT IN (0, 6)`;
     } else if (range === '1m') {
-      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '1 month'`;
+      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId" AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)) - INTERVAL '1 month' AND EXTRACT(DOW FROM hp."record_date") NOT IN (0, 6)`;
     } else if (range === '1y') {
-      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '1 year'`;
+      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId" AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)) - INTERVAL '1 year' AND EXTRACT(DOW FROM hp."record_date") NOT IN (0, 6)`;
     } else if (range === '5y') {
-      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId") - INTERVAL '5 years'`;
+      timeFilter = `AND hp."record_date" >= (SELECT MAX("record_date") FROM historical_prices WHERE "FinInstrmId" = cs."FinInstrmId" AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)) - INTERVAL '5 years' AND EXTRACT(DOW FROM hp."record_date") NOT IN (0, 6)`;
+    } else if (range === 'max') {
+      timeFilter = `AND EXTRACT(DOW FROM hp."record_date") NOT IN (0, 6)`;
     }
   }
 
@@ -1007,15 +1010,17 @@ router.get('/volume/:symbol', asyncHandler(async (req, res) => {
     else { range = '1m'; durationDays = 30; }
 
     if (range === '1d') {
-      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte)`;
+      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)`;
     } else if (range === '1w') {
-      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '7 days'`;
+      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '7 days' AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)`;
     } else if (range === '1m') {
-      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '1 month'`;
+      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '1 month' AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)`;
     } else if (range === '1y') {
-      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '1 year'`;
+      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '1 year' AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)`;
     } else if (range === '5y') {
-      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '5 years'`;
+      timeFilter = `AND record_date >= (SELECT max_date FROM max_date_cte) - INTERVAL '5 years' AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)`;
+    } else if (['max', 'all'].includes(range)) {
+      timeFilter = `AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)`;
     }
   }
 
@@ -1041,9 +1046,9 @@ router.get('/volume/:symbol', asyncHandler(async (req, res) => {
       WITH max_date_cte AS (
         SELECT MAX(m) as max_date
         FROM (
-          SELECT MAX(record_date) as m FROM bse_volume_history WHERE scrip_cd = $1
+          SELECT MAX(record_date) as m FROM bse_volume_history WHERE scrip_cd = $1 AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)
           UNION ALL
-          SELECT MAX(record_date) as m FROM nse_volume_history WHERE symbol = $2
+          SELECT MAX(record_date) as m FROM nse_volume_history WHERE symbol = $2 AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)
         ) sub
       ),
       dates AS (
@@ -1097,9 +1102,9 @@ router.get('/volume/:symbol', asyncHandler(async (req, res) => {
       WITH max_date_cte AS (
         SELECT MAX(m) as max_date
         FROM (
-          SELECT MAX(record_date) as m FROM bse_volume_history WHERE scrip_cd = $1
+          SELECT MAX(record_date) as m FROM bse_volume_history WHERE scrip_cd = $1 AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)
           UNION ALL
-          SELECT MAX(record_date) as m FROM nse_volume_history WHERE symbol = $2
+          SELECT MAX(record_date) as m FROM nse_volume_history WHERE symbol = $2 AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)
         ) sub
       ),
       combined_daily AS (
@@ -1176,9 +1181,9 @@ router.get('/volume/:symbol', asyncHandler(async (req, res) => {
       WITH max_date_cte AS (
         SELECT MAX(m) as max_date
         FROM (
-          SELECT MAX(record_date) as m FROM bse_volume_history WHERE scrip_cd = $1
+          SELECT MAX(record_date) as m FROM bse_volume_history WHERE scrip_cd = $1 AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)
           UNION ALL
-          SELECT MAX(record_date) as m FROM nse_volume_history WHERE symbol = $2
+          SELECT MAX(record_date) as m FROM nse_volume_history WHERE symbol = $2 AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)
         ) sub
       ),
       combined_daily AS (
