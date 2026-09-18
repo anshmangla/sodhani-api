@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { pool } from '../db/pool';
 import { requireRaAuth } from '../auth/raMiddleware';
 import { searchCompanies } from '../data/companies';
+import { searchAnalysts } from '../data/analysts';
 import { getEarningsSummary, getRecentPayouts, getEarningsByCall } from '../services/raTransfersService';
 import { parseCallInput } from '../validation/callInput';
 
@@ -19,11 +20,17 @@ function isValidUuid(id: string): boolean {
   return UUID_REGEX.test(id);
 }
 
-// GET /api/ra/companies?search=
+// GET /api/ra/companies?search= — also returns matching analysts (see
+// src/data/analysts.ts) so RA-side call composer search and any consumer of
+// this endpoint can surface both in one request. `companies` stays exactly
+// as before for backward compatibility.
 router.get('/companies', asyncHandler(async (req, res) => {
   const search = typeof req.query.search === 'string' ? req.query.search.slice(0, 100) : '';
-  const companies = await searchCompanies(search, 20);
-  res.status(200).json({ companies });
+  const [companies, analysts] = await Promise.all([
+    searchCompanies(search, 20),
+    searchAnalysts(search, 20),
+  ]);
+  res.status(200).json({ companies, analysts });
 }));
 
 // POST /api/ra/calls

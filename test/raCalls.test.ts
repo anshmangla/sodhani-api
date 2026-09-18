@@ -1,8 +1,27 @@
 import request from 'supertest';
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { app } from '../src/app';
 import { authHeader, raAuthHeader, clearCallsData, closeTestPool, testPool } from './helpers';
 import { TEST_RA_ID, TEST_USER_ID } from './constants';
+
+// A fixed, RFC-4122-shaped id (unlike TEST_RA_ID, which is deliberately not
+// version-4 compliant) so it passes src/routes/analysts.ts's UUID_REGEX
+// check on :id. Used by the "GET /api/analyst/*" describe blocks below,
+// which exercise the new analyst-profile routes but still need to create
+// research_calls rows - kept in this file (rather than test/analysts.test.ts)
+// so they share this file's single clearCallsData beforeEach instead of
+// racing a second file's clearCallsData against this one under vitest's
+// default parallel file execution.
+const FIXTURE_ANALYST_ID = '00000000-0000-4000-8000-000000000201';
+
+beforeAll(async () => {
+  await testPool.query(
+    `INSERT INTO research_analysts (id, email, password_hash, full_name, designation, is_active, token_version)
+     VALUES ($1, 'fixture-analyst-active@example.com', 'not-a-real-hash', 'Fixture Analyst', 'Chief Analyst', true, 0)
+     ON CONFLICT (id) DO UPDATE SET is_active = true, token_version = 0`,
+    [FIXTURE_ANALYST_ID]
+  );
+});
 
 beforeEach(clearCallsData);
 afterAll(closeTestPool);
@@ -197,5 +216,114 @@ describe('GET /api/calls — paywalled instrument fields', () => {
     expect(call.option_type).toBe('CE');
     expect(call.description).toBe('A short rationale.');
     expect(call.recommendation).toBe('Buy');
+  });
+});
+
+// ra_id is deliberately safe to expose on every call, even in the locked
+// preview - it's how web/mobile link a call card to the public analyst
+// profile page (GET /api/analyst/:id).
+describe('GET /api/calls — ra_id exposure', () => {
+  it('includes ra_id on both the list and detail views, so clients can link to the analyst profile', async () => {
+    const createRes = await request(app).post('/api/ra/calls').set(raHeaders()).send(baseEquity());
+    expect(createRes.status).toBe(201);
+    const callId = createRes.body.call.id;
+
+    const listRes = await request(app).get('/api/calls');
+    expect(listRes.status).toBe(200);
+    const listedCall = listRes.body.data.find((c: { id: string }) => c.id === callId);
+    expect(listedCall.ra_id).toBe(TEST_RA_ID);
+
+    const detailRes = await request(app).get(`/api/calls/${callId}`);
+    expect(detailRes.status).toBe(200);
+    expect(detailRes.body.call.ra_id).toBe(TEST_RA_ID);
+  });
+});
+
+describe('GET /api/analyst/:id — call stats', () => {
+  it('returns total/open/closed call stats and no Buy/Hold/Sell breakdown', async () => {
+    const created: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const res = await request(app)
+        .post('/api/ra/calls')
+        .set(raAuthHeader(FIXTURE_ANALYST_ID))
+        .send(baseEquity());
+      expect(res.status).toBe(201);
+      created.push(res.body.call.id);
+    }
+    const closeRes = await request(app)
+      .patch(`/api/ra/calls/${created[0]}/status`)
+      .set(raAuthHeader(FIXTURE_ANALYST_ID))
+      .send({ status: 'closed' });
+    expect(closeRes.status).toBe(200);
+
+    const res = await request(app).get(`/api/analyst/${FIXTURE_ANALYST_ID}`);
+    expect(res.status).toBe(200);
+    expect(res.body.analyst.id).toBe(FIXTURE_ANALYST_ID);
+    expect(res.body.analyst.name).toBe('Fixture Analyst');
+    expect(res.body.analyst.stats).toEqual({ total_calls: 3, open_calls: 2, closed_calls: 1 });
+    expect(res.body.analyst.member_since).toBeDefined();
+    expect(res.body.analyst.recommendation).toBeUndefined();
+    expect(res.body.analyst.stats.buy_calls).toBeUndefined();
+  });
+});
+
+describe('GET /api/analyst/:id/calls — pagination', () => {
+  it('paginates using the same page/limit convention as /api/calls', async () => {
+    for (let i = 0; i < 3; i++) {
+      const res = await request(app)
+        .post('/api/ra/calls')
+        .set(raAuthHeader(FIXTURE_ANALYST_ID))
+        .send(baseEquity());
+      expect(res.status).toBe(201);
+    }
+
+    const fullRes = await request(app).get(`/api/analyst/${FIXTURE_ANALYST_ID}/calls`);
+    expect(fullRes.status).toBe(200);
+    expect(fullRes.body.data).toHaveLength(3);
+    expect(fullRes.body.pagination).toEqual({ total: 3, page: 1, limit: 25, totalPages: 1 });
+
+    const pagedRes = await request(app).get(`/api/analyst/${FIXTURE_ANALYST_ID}/calls?page=2&limit=1`);
+    expect(pagedRes.status).toBe(200);
+    expect(pagedRes.body.data).toHaveLength(1);
+    expect(pagedRes.body.pagination).toEqual({ total: 3, page: 2, limit: 1, totalPages: 3 });
+  });
+});
+
+describe('GET /api/analyst/:id/calls — paywalled fields via buildCallPayload', () => {
+  it('hides paid contract fields until purchased, reusing calls.ts entitlement logic exactly', async () => {
+    const createRes = await request(app)
+      .post('/api/ra/calls')
+      .set(raAuthHeader(FIXTURE_ANALYST_ID))
+      .send(baseEquity({ is_paid: true, price_paise: 5000, description: 'A short rationale.' }));
+    expect(createRes.status).toBe(201);
+    const callId = createRes.body.call.id;
+
+    const lockedRes = await request(app).get(`/api/analyst/${FIXTURE_ANALYST_ID}/calls`);
+    expect(lockedRes.status).toBe(200);
+    const lockedCall = lockedRes.body.data.find((c: { id: string }) => c.id === callId);
+    expect(lockedCall.ra_id).toBe(FIXTURE_ANALYST_ID);
+    expect(lockedCall.instrument_type).toBe('EQUITY');
+    expect(lockedCall.recommendation).toBeUndefined();
+    expect(lockedCall.description).toBeUndefined();
+
+    const paymentId = '00000000-0000-0000-0000-0000000000f2';
+    await testPool.query(
+      `INSERT INTO payments (id, user_id, call_id, razorpay_order_id, amount_paise, status)
+       VALUES ($1, $2, $3, 'order_test_2', 5250, 'paid')`,
+      [paymentId, TEST_USER_ID, callId]
+    );
+    await testPool.query(`INSERT INTO purchased_calls (user_id, call_id, payment_id) VALUES ($1, $2, $3)`, [
+      TEST_USER_ID,
+      callId,
+      paymentId,
+    ]);
+
+    const unlockedRes = await request(app)
+      .get(`/api/analyst/${FIXTURE_ANALYST_ID}/calls`)
+      .set(authHeader(TEST_USER_ID));
+    expect(unlockedRes.status).toBe(200);
+    const unlockedCall = unlockedRes.body.data.find((c: { id: string }) => c.id === callId);
+    expect(unlockedCall.recommendation).toBe('Buy');
+    expect(unlockedCall.description).toBe('A short rationale.');
   });
 });

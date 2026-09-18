@@ -10,7 +10,7 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
   };
 }
 
-function clampLimit(raw: unknown, def: number, max: number): number {
+export function clampLimit(raw: unknown, def: number, max: number): number {
   const n = parseInt(String(raw ?? ''), 10);
   if (Number.isNaN(n) || n <= 0) return def;
   return Math.min(n, max);
@@ -19,7 +19,7 @@ function clampLimit(raw: unknown, def: number, max: number): number {
 // Non-rejecting auth resolution: any failure (missing header, bad/expired token,
 // revoked token, DB error) resolves to `undefined` — the caller is treated as
 // anonymous rather than being 401'd. This is deliberately distinct from `requireAuth`.
-async function resolveOptionalUserId(req: Request): Promise<string | undefined> {
+export async function resolveOptionalUserId(req: Request): Promise<string | undefined> {
   const header = req.headers.authorization ?? '';
   const [scheme, token] = header.split(' ');
   if (scheme !== 'Bearer' || !token) return undefined;
@@ -46,6 +46,7 @@ async function resolveOptionalUserId(req: Request): Promise<string | undefined> 
 function buildPreviewPayload(row: any, purchased: boolean) {
   return {
     id: row.id,
+    ra_id: row.ra_id,
     scrip_code: row.scrip_code,
     company_name: row.company_name,
     // Safe to show on a locked card — tells an investor "this is an Options
@@ -86,7 +87,7 @@ function buildFullPayload(row: any, purchased: boolean) {
   };
 }
 
-function buildCallPayload(row: any, purchased: boolean) {
+export function buildCallPayload(row: any, purchased: boolean) {
   const entitled = !row.is_paid || purchased;
   return entitled ? buildFullPayload(row, purchased) : buildPreviewPayload(row, purchased);
 }
