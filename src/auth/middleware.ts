@@ -28,9 +28,13 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
 
   try {
-    const result = await pool.query('SELECT token_version FROM users WHERE id = $1', [payload.sub]);
+    const result = await pool.query('SELECT token_version, is_active FROM users WHERE id = $1', [payload.sub]);
     if (result.rows.length === 0 || result.rows[0].token_version !== payload.token_version) {
       res.status(401).json({ detail: 'Token has been revoked' });
+      return;
+    }
+    if (result.rows[0].is_active === false) {
+      res.status(401).json({ detail: 'Account is inactive' });
       return;
     }
   } catch (err) {

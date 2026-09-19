@@ -27,10 +27,10 @@ const ACTIVATION_STATUS_MAP: Record<string, string> = {
   rejected: 'rejected',
 };
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DUMMY_HASH = '$2a$12$e8k8W8eLwz5bHj/bA3b4ie6uQkYtY5gWkS7A7oEsm/oZ2YF5R2nUq';
 
-function isValidPassword(password: string): boolean {
+export function isValidPassword(password: string): boolean {
   if (typeof password !== 'string') return false;
   if (password.length < 8 || password.length > 128) return false;
   const hasLetter = /[a-zA-Z]/.test(password);

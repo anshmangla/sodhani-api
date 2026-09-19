@@ -85,6 +85,21 @@ export const checkPhoneLimiter = rateLimit({
   },
 });
 
+// Admin Login: 5 attempts / 15 minutes per IP (no identity field to key on —
+// it's a single shared password, not per-account credentials).
+export const adminLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipTest,
+  keyGenerator: (req) => ipKeyGenerator(req.ip || '127.0.0.1'),
+  message: {
+    detail: 'Too many login attempts. Please wait 15 minutes before trying again.',
+    error: 'Too many login attempts. Please wait 15 minutes before trying again.',
+  },
+});
+
 // RA Login: 5 attempts / 15 minutes per email
 export const raLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,

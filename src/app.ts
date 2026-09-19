@@ -15,6 +15,12 @@ import paymentsWebhookRouter from './routes/paymentsWebhook';
 import myCallsRouter from './routes/myCalls';
 import watchlistRouter from './routes/watchlist';
 import analystsRouter from './routes/analysts';
+import adminAuthRouter from './routes/adminAuth';
+import adminRasRouter from './routes/adminRas';
+import adminUsersRouter from './routes/adminUsers';
+import adminCallsRouter from './routes/adminCalls';
+import adminTransactionsRouter from './routes/adminTransactions';
+import { requireAdminAuth } from './auth/adminMiddleware';
 
 export const app = express();
 
@@ -26,8 +32,10 @@ const allowedOrigins = [
   'https://www.safedge.in',
   'https://ra.safedge.in',
   'https://sodhani.vercel.app', 
-  'http://localhost:5173',      
-  'http://localhost:3000'       
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:5174',      // sodhani-admin local dev
+  'https://sodhani-admin.vercel.app' // sodhani-admin prod, deployed at tanishbajaj101-5009s-projects/sodhani-admin
 ];
 
 app.use(helmet({
@@ -66,6 +74,11 @@ app.use('/api/payments/webhook', paymentsWebhookRouter);
 app.use('/api/me', myCallsRouter);
 app.use('/api/watchlist', watchlistRouter);
 app.use('/api/analyst', analystsRouter);
+app.use('/api/admin/auth', adminAuthRouter);
+app.use('/api/admin/ras', requireAdminAuth, adminRasRouter);
+app.use('/api/admin/users', requireAdminAuth, adminUsersRouter);
+app.use('/api/admin/calls', requireAdminAuth, adminCallsRouter);
+app.use('/api/admin/transactions', requireAdminAuth, adminTransactionsRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
