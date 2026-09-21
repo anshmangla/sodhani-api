@@ -2,7 +2,7 @@ import request from 'supertest';
 import { describe, it, expect, afterAll } from 'vitest';
 import { app } from '../src/app';
 import { closeTestPool } from './helpers';
-import { SEEDED_PEER_STOCK_METRICS } from './constants';
+import { SEEDED_PEER_STOCK_METRICS, SEEDED_DUPLICATE_METRICS } from './constants';
 
 afterAll(closeTestPool);
 
@@ -43,5 +43,52 @@ describe('GET /api/metrics/:symbol', () => {
     const res = await request(app).get('/api/metrics/888001');
     expect(res.status).toBe(200);
     expect(res.body['Shares']).toBeCloseTo(bse.mktCap / bse.cmp, 6);
+  });
+});
+
+// stock_metrics carries two rows for some companies - one keyed by ticker, one
+// by numeric BSE code, written by different metricsSync runs and independently
+// stale. /api/screener and /api/company/:symbol/peers both already pin this
+// down with `ORDER BY mkt_cap DESC NULLS LAST`; this route used to take a bare
+// `LIMIT 1` and could serve the other row, so the same stock showed one P/E on
+// the screener list and a different one on its own detail view.
+describe('GET /api/metrics/:symbol with duplicate stock_metrics rows', () => {
+  const { symbol, finInstrmId, fresh, stale } = SEEDED_DUPLICATE_METRICS;
+
+  it('resolves the same row by ticker and by scrip code', async () => {
+    const byTicker = await request(app).get(`/api/metrics/${symbol}`);
+    const byCode = await request(app).get(`/api/metrics/${finInstrmId}`);
+    expect(byTicker.status).toBe(200);
+    expect(byCode.status).toBe(200);
+    expect(byTicker.body['P/E']).toBe(byCode.body['P/E']);
+    expect(byTicker.body['CMP']).toBe(byCode.body['CMP']);
+    expect(byTicker.body['Mkt Cap']).toBe(byCode.body['Mkt Cap']);
+  });
+
+  it('picks the highest-mkt_cap row, matching /api/screener and /peers', async () => {
+    const res = await request(app).get(`/api/metrics/${symbol}`);
+    expect(res.body['Mkt Cap']).toBe(fresh.mktCap);
+    expect(res.body['P/E']).toBe(fresh.pe);
+    expect(res.body['CMP']).toBe(fresh.cmp);
+    expect(res.body['P/E']).not.toBe(stale.pe);
+  });
+
+  it('agrees with the P/E /api/screener serves for the same company', async () => {
+    const metrics = await request(app).get(`/api/metrics/${symbol}`);
+    const screener = await request(app).get('/api/screener?limit=100');
+    const row = screener.body.data.find(
+      (r: { TckrSymb: string }) => r.TckrSymb === symbol
+    );
+    expect(row).toBeDefined();
+    expect(Number(row.pe)).toBe(metrics.body['P/E']);
+    expect(Number(row.cmp)).toBe(metrics.body['CMP']);
+  });
+
+  it('derives EPS against the CMP of the row it actually served', async () => {
+    // Guards the cross-row mismatch this bug could produce: an EPS derived
+    // from one row's CMP and another row's P/E is a number for no company.
+    const res = await request(app).get(`/api/metrics/${symbol}`);
+    expect(res.body['EPS']).toBeCloseTo(fresh.cmp / fresh.pe, 6);
+    expect(res.body['Shares']).toBeCloseTo(fresh.mktCap / fresh.cmp, 6);
   });
 });

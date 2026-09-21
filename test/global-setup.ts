@@ -12,6 +12,7 @@ import {
   SEEDED_PEER_COMPANY_STOCKS,
   SEEDED_PEER_STOCK_METRICS,
   SEEDED_COMPANY_SECTORS,
+  SEEDED_DUPLICATE_METRICS,
 } from './constants';
 
 // One-time setup, run by vitest in a separate process before any test file:
@@ -211,6 +212,31 @@ export default async function globalSetup() {
      VALUES ('TICKERKEYED', 'Ticker Keyed Co', 'IN77', 'Test Sector', 'IN7777', 'Test Industry', 'IN777701', 'Test Leaf')
      ON CONFLICT (fin_instrm_id) DO NOTHING`
   );
+
+  // 8. Seed the duplicate-row regression fixture: one company_stock row with
+  //    TWO stock_metrics rows (one keyed by BSE code, one by ticker), which is
+  //    what /api/metrics used to resolve arbitrarily via a bare LIMIT 1.
+  await db.query(
+    `INSERT INTO company_stock ("FinInstrmId", "TckrSymb", "FinInstrmNm", "LastPric")
+     VALUES ($1, $2, $3, 0)
+     ON CONFLICT DO NOTHING`,
+    [SEEDED_DUPLICATE_METRICS.finInstrmId, SEEDED_DUPLICATE_METRICS.symbol, SEEDED_DUPLICATE_METRICS.name]
+  );
+  // Insertion order matters: the stale row goes in FIRST so an unordered
+  // `LIMIT 1` seq-scans straight into it. That is the production ordering too
+  // (the ticker-keyed row predates the code-keyed one), and without it this
+  // fixture silently passes against the bug it is meant to catch.
+  for (const [key, m] of [
+    [SEEDED_DUPLICATE_METRICS.symbol, SEEDED_DUPLICATE_METRICS.stale],
+    [SEEDED_DUPLICATE_METRICS.finInstrmId, SEEDED_DUPLICATE_METRICS.fresh],
+  ] as const) {
+    await db.query(
+      `INSERT INTO stock_metrics (symbol, cmp, pe, mkt_cap, profit_var)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (symbol) DO NOTHING`,
+      [key, m.cmp, m.pe, m.mktCap, m.profitVar]
+    );
+  }
 
   await db.end();
   console.log('[setup] test database ready');

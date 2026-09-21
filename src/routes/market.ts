@@ -1354,7 +1354,7 @@ router.get('/stocks', asyncHandler(async (req, res) => {
 
   if (!search) {
     const result = await pool.query(
-      `SELECT "FinInstrmId", "TckrSymb", "FinInstrmNm", "ISIN", "SctySrs", "LastPric", "TradDt"
+      `SELECT "FinInstrmId", "TckrSymb", COALESCE("FinInstrmNm", "TckrSymb") AS "FinInstrmNm", "ISIN", "SctySrs", "LastPric", "TradDt"
        FROM company_stock
        ORDER BY "TckrSymb" ASC
        LIMIT $1`,
@@ -1365,7 +1365,7 @@ router.get('/stocks', asyncHandler(async (req, res) => {
   }
 
   const result = await pool.query(
-    `SELECT "FinInstrmId", "TckrSymb", "FinInstrmNm", "ISIN", "SctySrs", "LastPric", "TradDt"
+    `SELECT "FinInstrmId", "TckrSymb", COALESCE("FinInstrmNm", "TckrSymb") AS "FinInstrmNm", "ISIN", "SctySrs", "LastPric", "TradDt"
      FROM company_stock
      WHERE "TckrSymb" ILIKE $1 OR "FinInstrmNm" ILIKE $1 OR "ISIN" ILIKE $1 OR "FinInstrmId"::text = $2
      ORDER BY "TckrSymb" ASC
@@ -1832,12 +1832,21 @@ router.get('/metrics/:symbol', asyncHandler(async (req, res) => {
      tckrSymb = csResult.rows[0].TckrSymb ? csResult.rows[0].TckrSymb.replace(/\.(NS|BO)$/i, '') : symbol;
   }
 
+  // stock_metrics can carry two rows for the same company - one keyed by
+  // ticker, one by numeric BSE code, written by different metricsSync runs and
+  // independently stale - so this WHERE can match both. A bare LIMIT 1 picked
+  // whichever Postgres happened to return first, which is how the same stock
+  // came to show one P/E here and a different one on the screener list
+  // (RELIANCE: 42.91 vs 21.99 at the same moment). ORDER BY mkt_cap makes the
+  // choice deterministic AND identical to the one /api/screener and
+  // /api/company/:symbol/peers already make via their DISTINCT ON.
   const result = await pool.query(
     `SELECT sm.* 
      FROM stock_metrics sm
      WHERE UPPER(sm.symbol) = UPPER($1) 
         OR sm.symbol = $2
         OR UPPER(sm.symbol) = UPPER($3)
+     ORDER BY sm.mkt_cap DESC NULLS LAST
      LIMIT 1`,
     [symbol, finId, tckrSymb]
   );

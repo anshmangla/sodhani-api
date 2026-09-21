@@ -82,6 +82,23 @@ export const SEEDED_PEER_STOCK_METRICS: Record<
   '999999': { cmp: 40, pe: 10, mktCap: 400, profitVar: 0.5 },
 };
 
+// Duplicate stock_metrics fixture: the exact production shape behind the
+// RELIANCE P/E discrepancy - the same company carrying one row keyed by
+// numeric BSE code and one keyed by ticker, written by different metricsSync
+// runs and therefore independently stale. These are the real values the two
+// production rows held: /api/screener served 21.99 (fresher, consolidated
+// basis) while /api/metrics served 42.91 (staler, standalone basis) for the
+// same stock at the same moment.
+export const SEEDED_DUPLICATE_METRICS = {
+  finInstrmId: '666001',
+  symbol: 'DUPEMETRICS',
+  name: 'Duplicate Metrics Co',
+  // The row every other endpoint already resolves to, via
+  // `ORDER BY mkt_cap DESC NULLS LAST`.
+  fresh: { cmp: 1312.6, pe: 21.99, mktCap: 1775880.84, profitVar: -34 },
+  stale: { cmp: 1243.4, pe: 42.91, mktCap: 1684938.93, profitVar: 32 },
+};
+
 // company_sectors rows: note the mixed fin_instrm_id key format this
 // endpoint has to handle - ticker for most rows, numeric BSE code for
 // '888001' (the BSE-only listing above, which has no NSE ticker).
