@@ -53,7 +53,7 @@ async function fetchLevelRows(column: LevelColumn, code: string): Promise<PeerLe
      LEFT JOIN stock_metrics sm ON
         sm.symbol = cs."FinInstrmId"::text OR sm.symbol = cs."TckrSymb"
      WHERE ci.${column} = $1
-     ORDER BY cs."FinInstrmId", sm.mkt_cap DESC NULLS LAST`,
+     ORDER BY cs."FinInstrmId", sm.updated_at DESC NULLS LAST`,
     [code]
   );
   return result.rows;

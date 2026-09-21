@@ -1470,7 +1470,7 @@ router.get('/screener', asyncHandler(async (req, res) => {
       JOIN stock_metrics sm ON sm.symbol = cs."FinInstrmId"::text OR sm.symbol = cs."TckrSymb"
       LEFT JOIN company_sectors ci ON ci.fin_instrm_id = cs."FinInstrmId"::text OR ci.fin_instrm_id = cs."TckrSymb"
       ${whereClause}
-      ORDER BY cs."FinInstrmId", sm.mkt_cap DESC NULLS LAST
+      ORDER BY cs."FinInstrmId", sm.updated_at DESC NULLS LAST
     )
   `;
 
@@ -1837,16 +1837,15 @@ router.get('/metrics/:symbol', asyncHandler(async (req, res) => {
   // independently stale - so this WHERE can match both. A bare LIMIT 1 picked
   // whichever Postgres happened to return first, which is how the same stock
   // came to show one P/E here and a different one on the screener list
-  // (RELIANCE: 42.91 vs 21.99 at the same moment). ORDER BY mkt_cap makes the
-  // choice deterministic AND identical to the one /api/screener and
-  // /api/company/:symbol/peers already make via their DISTINCT ON.
+  // (RELIANCE: 42.91 vs 21.99 at the same moment). ORDER BY updated_at makes the
+  // choice deterministic and ensures the freshest row is picked.
   const result = await pool.query(
     `SELECT sm.* 
      FROM stock_metrics sm
      WHERE UPPER(sm.symbol) = UPPER($1) 
         OR sm.symbol = $2
         OR UPPER(sm.symbol) = UPPER($3)
-     ORDER BY sm.mkt_cap DESC NULLS LAST
+     ORDER BY sm.updated_at DESC NULLS LAST
      LIMIT 1`,
     [symbol, finId, tckrSymb]
   );
