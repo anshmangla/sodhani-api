@@ -1375,22 +1375,86 @@ router.get('/stocks', asyncHandler(async (req, res) => {
   res.json({ count: result.rows.length, stocks: result.rows });
 }));
 
-// GET /api/announcements/:symbol?limit=20
+// GET /api/announcements/:symbol?limit=20&source=all|bse|nse
+// Merges BSE and NSE announcements for one company. `:symbol` can be a ticker,
+// an NSE symbol or a BSE scrip code; it is resolved to both exchanges' codes
+// and each feed is filtered by its own code (bse_announcements by scrip_cd,
+// nse_announcements by symbol).
+//
+// NSE rows are shaped like BSE rows so existing clients work unchanged:
+// `attachmentname` carries NSE's full attachment URL (both clients already pass
+// through values starting with "http"), and `source` says which feed a row
+// came from. A dual-listed company's filing appears on both exchanges and is
+// NOT de-duplicated here - use ?source= to pick one feed.
 router.get('/announcements/:symbol', asyncHandler(async (req, res) => {
   const { symbol } = req.params;
   const limit = clampLimit(req.query.limit, 20, 100);
+  const sourceParam = String(req.query.source ?? 'all').toLowerCase();
+  const source = sourceParam === 'bse' || sourceParam === 'nse' ? sourceParam : 'all';
 
-  const result = await pool.query(
-    `SELECT a.* 
-     FROM bse_announcements a
-     LEFT JOIN company_stock cs ON a.scrip_cd = cs."FinInstrmId"::text
-     WHERE a.scrip_cd = $1 OR UPPER(cs."TckrSymb") = UPPER($1)
-     ORDER BY a."news_dt" DESC 
-     LIMIT $2`,
-    [symbol, limit]
-  );
+  // _wall is the row's wall-clock time as text. BSE's news_dt is a TIMESTAMP
+  // holding IST wall-clock time and NSE's an_dt is a real instant; comparing
+  // both as IST wall-clock strings orders them correctly whatever timezone the
+  // API process runs in.
+  type Merged = { _wall: string; [k: string]: unknown };
+  const merged: Merged[] = [];
 
-  res.json({ count: result.rows.length, announcements: result.rows });
+  if (source !== 'nse') {
+    const bse = await pool.query(
+      `SELECT a.*,
+              to_char(a."news_dt", 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS _wall
+       FROM bse_announcements a
+       LEFT JOIN company_stock cs ON a.scrip_cd = cs."FinInstrmId"::text
+       WHERE a.scrip_cd = $1 OR UPPER(cs."TckrSymb") = UPPER($1)
+       ORDER BY a."news_dt" DESC
+       LIMIT $2`,
+      [symbol, limit]
+    );
+    for (const row of bse.rows) merged.push({ ...row, source: 'BSE' });
+  }
+
+  if (source !== 'bse') {
+    try {
+      const resolved = await resolveExchangeCodes(symbol);
+      const nseSymbol = resolved?.nseSymbol ?? (/^\d+$/.test(symbol) ? null : symbol.trim().toUpperCase());
+      if (nseSymbol) {
+        const nse = await pool.query(
+          `SELECT seq_id, symbol, company_name, category, description, attachment_url,
+                  to_char(an_dt AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS _wall
+           FROM nse_announcements
+           WHERE symbol = $1
+           ORDER BY an_dt DESC
+           LIMIT $2`,
+          [nseSymbol, limit]
+        );
+        for (const r of nse.rows) {
+          merged.push({
+            newsid: `NSE-${r.seq_id}`,
+            scrip_cd: r.symbol,
+            // Same convention BSE rows serialize with: IST wall-clock + "Z".
+            news_dt: r._wall ? `${r._wall}Z` : null,
+            newssub: [r.company_name, r.symbol, r.category].filter(Boolean).join(' - '),
+            headline: r.description,
+            slongname: r.company_name,
+            announcement_type: null,
+            attachmentname: r.attachment_url,
+            categoryname: r.category,
+            source: 'NSE',
+            _wall: r._wall ?? '',
+          });
+        }
+      }
+    } catch (err) {
+      // e.g. nse_announcements not created yet (the NSE worker creates it on
+      // start): serve BSE rather than failing the whole endpoint.
+      console.warn('[announcements] NSE lookup failed, serving BSE only:', (err as Error).message);
+    }
+  }
+
+  merged.sort((a, b) => (a._wall < b._wall ? 1 : a._wall > b._wall ? -1 : 0));
+  const announcements = merged.slice(0, limit).map(({ _wall, ...row }) => row);
+
+  res.json({ count: announcements.length, announcements });
 }));
 
 // GET /api/research-reports?limit=20
