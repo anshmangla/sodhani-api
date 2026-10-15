@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import path from 'path';
 import { globalLimiter } from './middleware/rateLimiter';
 import marketRouter from './routes/market';
+import taRouter from './routes/ta';
 import peersRouter from './routes/peers';
 import authRouter from './routes/auth';
 import raAuthRouter from './routes/raAuth';
@@ -64,6 +65,7 @@ app.use('/api', globalLimiter);
 // GET /company/:symbol/peers (binding "peers" as :concern and 400ing).
 app.use('/api', peersRouter);
 app.use('/api', marketRouter);
+app.use('/api', taRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/ra', raAuthRouter);
 app.use('/api/ra/onboarding', raOnboardingRouter);

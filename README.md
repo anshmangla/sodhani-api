@@ -734,6 +734,40 @@ GET /api/technical/500325
 
 ---
 
+### `GET /api/ta/:bseCode?date=YYYY-MM-DD`
+
+On-demand TA snapshot for a BSE scrip code, computed from daily EOD bars up to and including
+`date` (no lookahead). Indicators follow the "TA Indicator Spec for News-Driven Stock Agent":
+EMA 50/200 trend, ADX 14, RSI 14 with divergence, ATR 14 % and its 252-day percentile/squeeze,
+relative volume and 20/60 volume trend, relative strength vs NIFTY 50, and 52-week / swing levels.
+Each group returns values plus a state label (e.g. `overbought`, `trending`, `compressed`).
+Fields without enough history are `null`; `rs_*` is `null` before NIFTY 50 history starts (2025-08-13).
+If `date` is a holiday or weekend, the last session before it is used and returned as `as_of_session`.
+
+**Example**
+```
+GET /api/ta/500325?date=2026-10-15
+```
+
+**Response** (abridged)
+```json
+{
+  "bse_code": "500325", "name": "RELIANCE INDUSTRIES LTD.", "as_of_date": "2026-10-15",
+  "as_of_session": "2026-10-15", "history_days": 6733, "close": 1223.3,
+  "trend": { "ema50": 1201.4, "ema200": 1250.2, "above_ema50": true, "above_ema200": false, "ema_alignment": "mixed", "ema50_slope": -0.8 },
+  "trend_strength": { "adx": 18.2, "state": "weak" },
+  "momentum": { "rsi": 61.3, "state": "neutral", "divergence": "none", "days_in_zone": 0 },
+  "volatility": { "atr": 24.1, "atr_pct": 1.97, "atr_percentile": 55, "state": "normal", "squeeze": false, "days_in_squeeze": 0 },
+  "volume": { "rel_volume": 2.6, "vol_trend_ratio": 1.1, "state": "flat" },
+  "relative_strength": { "benchmark": "NIFTY 50", "rs_20d": 1.2, "rs_60d": -3.4 },
+  "levels": { "high_52w": 1600, "low_52w": 1150, "pct_from_52w_high": -23.5, "pct_from_52w_low": 6.4, "nearest_support": 1153.1, "nearest_resistance": 1240 }
+}
+```
+
+**400** for a non-6-digit code or invalid date; **404** for an unknown code or no bars on/before `date`.
+
+---
+
 ### `GET /api/metrics/:symbol`
 
 Precomputed valuation/profitability metrics (the same `stock_metrics` table `/api/screener` reads)
