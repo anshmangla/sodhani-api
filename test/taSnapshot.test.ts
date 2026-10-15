@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ema, rsi, atr, pivotHighs, pivotLows, computeSnapshot, Bar, IndexPoint } from '../src/services/taSnapshot';
+import { ema, rsi, atr, pivotHighs, pivotLows, computeSnapshot, compact, Bar, IndexPoint } from '../src/services/taSnapshot';
 
 function dateAt(i: number): string {
   // Consecutive weekdays from 2024-01-01 (a Monday); exact calendar doesn't matter here.
@@ -84,5 +84,16 @@ describe('taSnapshot indicator math', () => {
     expect(s.volatility.state).toBe('compressed');
     expect(s.volatility.squeeze).toBe(true);
     expect(s.volatility.days_in_squeeze).toBeGreaterThan(5);
+  });
+
+  it('compact drops null fields and groups left empty', () => {
+    const out = compact(computeSnapshot(barsFromCloses([10, 11, 12, 13, 14, 13, 12]), []));
+    expect(out.trend).toBeUndefined();
+    expect(out.momentum).toBeUndefined();
+    expect(out.relative_strength).toBeUndefined();
+    expect(out.levels.high_52w).toBe(15);
+    expect('nearest_support' in out.levels).toBe(false);
+    expect(out.levels.nearest_resistance).toBe(15);
+    expect(out.history_days).toBe(7);
   });
 });

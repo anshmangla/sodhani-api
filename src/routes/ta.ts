@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { pool } from '../db/pool';
-import { computeSnapshot, Bar, IndexPoint } from '../services/taSnapshot';
+import { computeSnapshot, compact, Bar, IndexPoint } from '../services/taSnapshot';
 
 const router = Router();
 
@@ -96,12 +96,14 @@ router.get('/ta/:bseCode', asyncHandler(async (req, res) => {
 
   const snapshot = computeSnapshot(bars, nifty);
 
-  res.json({
+  // Fields that couldn't be computed (short history, no index data yet) are
+  // omitted rather than returned as null.
+  res.json(compact({
     bse_code: bseCode,
     name: companyRes.rows[0].FinInstrmNm ?? null,
     as_of_date: date,
     ...snapshot,
-  });
+  }));
 }));
 
 export default router;

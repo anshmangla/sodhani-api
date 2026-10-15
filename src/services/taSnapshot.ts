@@ -158,6 +158,24 @@ function indexCloseOnOrBefore(points: IndexPoint[], date: string): Num {
   return found;
 }
 
+// Drops null fields, then any group left empty, so the response only carries
+// what could actually be computed. A relative_strength group with no rs_* value
+// left is dropped too, rather than returning just its benchmark label.
+export function compact(value: any): any {
+  if (Array.isArray(value)) return value.map(compact);
+  if (value === null || typeof value !== 'object') return value;
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (v == null) continue;
+    const c = compact(v);
+    if (c !== null && typeof c === 'object' && !Array.isArray(c) && Object.keys(c).length === 0) continue;
+    out[k] = c;
+  }
+  const rs = out.relative_strength;
+  if (rs && Object.keys(rs).every((k) => k === 'benchmark')) delete out.relative_strength;
+  return out;
+}
+
 export function computeSnapshot(bars: Bar[], nifty: IndexPoint[]) {
   const n = bars.length;
   const last = n - 1;

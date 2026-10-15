@@ -741,7 +741,8 @@ On-demand TA snapshot for a BSE scrip code, computed from daily EOD bars up to a
 EMA 50/200 trend, ADX 14, RSI 14 with divergence, ATR 14 % and its 252-day percentile/squeeze,
 relative volume and 20/60 volume trend, relative strength vs NIFTY 50, and 52-week / swing levels.
 Each group returns values plus a state label (e.g. `overbought`, `trending`, `compressed`).
-Fields without enough history are `null`; `rs_*` is `null` before NIFTY 50 history starts (2025-08-13).
+Fields that can't be computed (not enough history) are omitted from the response, and a group
+with nothing left is omitted entirely; `rs_*` is omitted before NIFTY 50 history starts (2025-08-13).
 If `date` is a holiday or weekend, the last session before it is used and returned as `as_of_session`.
 
 **Example**
