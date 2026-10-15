@@ -47,16 +47,23 @@ router.get('/ta/:bseCode', asyncHandler(async (req, res) => {
 
   // Only the midnight EOD rows are daily bars; historical_prices also holds
   // ~5-minute intraday ticks (mixed BSE/NSE) that must not be treated as bars.
+  // Volume prefers bse_volume_history (BSE bhavcopy) over the bar's own volume:
+  // some stretches of historical_prices carry NSE-sized Yahoo volumes, which
+  // would make BSE-vs-NSE level shifts look like volume spikes. A 0 is a
+  // placeholder row, not a real session volume, so it's treated as missing.
   const barsRes = await pool.query(
-    `SELECT to_char(record_date, 'YYYY-MM-DD') AS date,
-            open_price, high_price, low_price, close_price, volume
-     FROM historical_prices
-     WHERE "FinInstrmId" = $1
-       AND record_date < $2::date + INTERVAL '1 day'
-       AND record_date = date_trunc('day', record_date)
-       AND EXTRACT(DOW FROM record_date) NOT IN (0, 6)
-       AND close_price IS NOT NULL
-     ORDER BY record_date ASC`,
+    `SELECT to_char(hp.record_date, 'YYYY-MM-DD') AS date,
+            hp.open_price, hp.high_price, hp.low_price, hp.close_price,
+            COALESCE(NULLIF(b.volume, 0), NULLIF(hp.volume, 0)) AS volume
+     FROM historical_prices hp
+     LEFT JOIN bse_volume_history b
+       ON b.scrip_cd = hp."FinInstrmId" AND b.record_date = hp.record_date::date
+     WHERE hp."FinInstrmId" = $1
+       AND hp.record_date < $2::date + INTERVAL '1 day'
+       AND hp.record_date = date_trunc('day', hp.record_date)
+       AND EXTRACT(DOW FROM hp.record_date) NOT IN (0, 6)
+       AND hp.close_price IS NOT NULL
+     ORDER BY hp.record_date ASC`,
     [bseCode, date]
   );
   if (barsRes.rows.length === 0) {
@@ -72,7 +79,7 @@ router.get('/ta/:bseCode', asyncHandler(async (req, res) => {
       high: r.high_price != null ? Number(r.high_price) : close,
       low: r.low_price != null ? Number(r.low_price) : close,
       close,
-      volume: r.volume != null ? Number(r.volume) : 0,
+      volume: r.volume != null ? Number(r.volume) : null,
     };
   });
 

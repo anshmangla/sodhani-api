@@ -12,7 +12,7 @@ export interface Bar {
   high: number;
   low: number;
   close: number;
-  volume: number;
+  volume: number | null; // null = no real volume for that session
 }
 
 export interface IndexPoint {
@@ -224,11 +224,18 @@ export function computeSnapshot(bars: Bar[], nifty: IndexPoint[]) {
   }
 
   // Volume
+  // Averages skip sessions with no volume; a window needs at least 3/4 of its
+  // sessions present to count.
   const vols = bars.map((b) => b.volume);
-  const prev20 = n >= 21 ? avg(vols.slice(n - 21, n - 1)) : null;
-  const relVolume = prev20 ? vols[last] / prev20 : null;
-  const avg20 = n >= 20 ? avg(vols.slice(n - 20)) : null;
-  const avg60 = n >= 60 ? avg(vols.slice(n - 60)) : null;
+  const avgVol = (from: number, to: number): Num => {
+    if (from < 0) return null;
+    const xs = vols.slice(from, to).filter((v): v is number => v != null);
+    return xs.length >= 0.75 * (to - from) ? avg(xs) : null;
+  };
+  const prev20 = avgVol(n - 21, n - 1);
+  const relVolume = prev20 && vols[last] != null ? (vols[last] as number) / prev20 : null;
+  const avg20 = avgVol(n - 20, n);
+  const avg60 = avgVol(n - 60, n);
   const volTrend = avg20 != null && avg60 ? avg20 / avg60 : null;
   const volTrendState = volTrend == null ? null : volTrend > 1.2 ? 'rising' : volTrend < 0.8 ? 'falling' : 'flat';
 
