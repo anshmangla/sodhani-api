@@ -176,7 +176,24 @@ export function compact(value: any): any {
   return out;
 }
 
-export function computeSnapshot(bars: Bar[], nifty: IndexPoint[]) {
+// A gap longer than this between consecutive bars is a hole in the stored
+// history (e.g. a failed backfill left some stocks with 2000-2002 data followed
+// directly by 2026 data), not a real trading pause. Illiquid scrips go weeks
+// without a bar, so the cut-off sits well above that.
+export const MAX_GAP_DAYS = 90;
+
+// Bars after the most recent hole, so no indicator is computed across it.
+export function latestContiguous(bars: Bar[], maxGapDays = MAX_GAP_DAYS): Bar[] {
+  const dayMs = 24 * 3600 * 1000;
+  for (let i = bars.length - 1; i > 0; i--) {
+    const gap = (Date.parse(bars[i].date) - Date.parse(bars[i - 1].date)) / dayMs;
+    if (gap > maxGapDays) return bars.slice(i);
+  }
+  return bars;
+}
+
+export function computeSnapshot(allBars: Bar[], nifty: IndexPoint[]) {
+  const bars = latestContiguous(allBars);
   const n = bars.length;
   const last = n - 1;
   const closes = bars.map((b) => b.close);

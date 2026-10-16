@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ema, rsi, atr, pivotHighs, pivotLows, computeSnapshot, compact, Bar, IndexPoint } from '../src/services/taSnapshot';
+import { ema, rsi, atr, pivotHighs, pivotLows, computeSnapshot, compact, latestContiguous, Bar, IndexPoint } from '../src/services/taSnapshot';
 
 function dateAt(i: number): string {
   // Consecutive weekdays from 2024-01-01 (a Monday); exact calendar doesn't matter here.
@@ -95,5 +95,25 @@ describe('taSnapshot indicator math', () => {
     expect('nearest_support' in out.levels).toBe(false);
     expect(out.levels.nearest_resistance).toBe(15);
     expect(out.history_days).toBe(7);
+  });
+
+  it('ignores bars before a multi-year hole in the history', () => {
+    const old = Array.from({ length: 300 }, (_, i) => ({ date: dateAt(i), open: 50, high: 51, low: 49, close: 50, volume: 1000 }));
+    const recent = Array.from({ length: 60 }, (_, i) => {
+      const d = new Date(Date.UTC(2026, 6, 17 + i)).toISOString().slice(0, 10);
+      return { date: d, open: 4900, high: 4910, low: 4890, close: 4900, volume: 1000 };
+    });
+    expect(latestContiguous([...old, ...recent])).toHaveLength(60);
+    const out = compact(computeSnapshot([...old, ...recent], []));
+    expect(out.history_days).toBe(60);
+    expect(out.trend.ema50).toBe(4900); // seeded from 2026 prices only
+    expect('ema200' in out.trend).toBe(false);
+    expect(out.levels.low_52w).toBe(4890);
+  });
+
+  it('keeps short gaps from illiquid trading', () => {
+    const bars = barsFromCloses([10, 11, 12]);
+    bars[2] = { ...bars[2], date: '2024-03-15' }; // ~10 weeks after bar 1
+    expect(latestContiguous(bars)).toHaveLength(3);
   });
 });
