@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { pool } from '../db/pool';
-import { computeSnapshot, compact, Bar, IndexPoint } from '../services/taSnapshot';
+import { computeSnapshot, compact, detectCorporateActions, latestContiguous, Bar, IndexPoint } from '../services/taSnapshot';
 
 const router = Router();
 
@@ -83,6 +83,27 @@ router.get('/ta/:bseCode', asyncHandler(async (req, res) => {
     };
   });
 
+  // A suspected split/bonus inside the indicator window means the history isn't
+  // comparable across it, so report that instead of computing indicators.
+  const suspected = detectCorporateActions(bars);
+  if (suspected.length > 0) {
+    const used = latestContiguous(bars);
+    const last = used[used.length - 1];
+    res.json({
+      bse_code: bseCode,
+      name: companyRes.rows[0].FinInstrmNm ?? null,
+      as_of_date: date,
+      as_of_session: last.date,
+      market_price: Math.round(last.close * 100) / 100,
+      status: 'suspected_corporate_action',
+      message:
+        'The price history has a one-day jump that looks like an unadjusted split, bonus or consolidation, ' +
+        'so technical indicators would be distorted and are not returned.',
+      suspected_events: suspected,
+    });
+    return;
+  }
+
   const niftyRes = await pool.query(
     `SELECT DISTINCT ON (record_time::date)
             to_char(record_time::date, 'YYYY-MM-DD') AS date, value
@@ -102,6 +123,7 @@ router.get('/ta/:bseCode', asyncHandler(async (req, res) => {
     bse_code: bseCode,
     name: companyRes.rows[0].FinInstrmNm ?? null,
     as_of_date: date,
+    status: 'ok',
     ...snapshot,
   }));
 }));

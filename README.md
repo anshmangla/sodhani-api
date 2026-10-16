@@ -754,7 +754,7 @@ GET /api/ta/500325?date=2026-10-15
 ```json
 {
   "bse_code": "500325", "name": "RELIANCE INDUSTRIES LTD.", "as_of_date": "2026-10-15",
-  "as_of_session": "2026-10-15", "history_days": 6733, "market_price": 1223.3,
+  "as_of_session": "2026-10-15", "status": "ok", "history_days": 6733, "market_price": 1223.3,
   "trend": { "ema50": 1201.4, "ema200": 1250.2, "above_ema50": true, "above_ema200": false, "ema_alignment": "mixed", "ema50_slope": -0.8 },
   "trend_strength": { "adx": 18.2, "state": "weak" },
   "momentum": { "rsi": 61.3, "state": "neutral", "divergence": "none", "days_in_zone": 0 },
@@ -764,6 +764,23 @@ GET /api/ta/500325?date=2026-10-15
   "levels": { "high_52w": 1600, "low_52w": 1150, "pct_from_52w_high": -23.5, "pct_from_52w_low": 6.4, "nearest_support": 1153.1, "nearest_resistance": 1240 }
 }
 ```
+
+**Suspected split/bonus.** Stored history mixes Yahoo bars (adjusted when fetched) with raw exchange
+bars and is never re-adjusted, so a split or bonus appears as a one-day jump. If the last 300 sessions
+contain a close-to-close move beyond ×0.6 / ×1.67 that doesn't revert within 10 sessions, no indicators
+are returned; instead `status` is `"suspected_corporate_action"`:
+```json
+{
+  "bse_code": "544209", "name": "Bansal Wire Industries Limited", "as_of_date": "2026-10-16",
+  "as_of_session": "2026-10-16", "market_price": 61.8, "status": "suspected_corporate_action",
+  "message": "The price history has a one-day jump that looks like an unadjusted split, bonus or consolidation, so technical indicators would be distorted and are not returned.",
+  "suspected_events": [
+    { "date": "2026-10-15", "prev_close": 314.05, "close": 63.13, "price_ratio": 0.201, "likely_factor": 0.2, "confirmed_permanent": false }
+  ]
+}
+```
+`likely_factor` is present when the jump matches a standard ratio; `confirmed_permanent` is false when
+fewer than 10 sessions have passed since the jump.
 
 **400** for a non-6-digit code or invalid date; **404** for an unknown code or no bars on/before `date`.
 

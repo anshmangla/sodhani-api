@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ema, rsi, atr, pivotHighs, pivotLows, computeSnapshot, compact, latestContiguous, Bar, IndexPoint } from '../src/services/taSnapshot';
+import { ema, rsi, atr, pivotHighs, pivotLows, computeSnapshot, compact, latestContiguous, detectCorporateActions, Bar, IndexPoint } from '../src/services/taSnapshot';
 
 function dateAt(i: number): string {
   // Consecutive weekdays from 2024-01-01 (a Monday); exact calendar doesn't matter here.
@@ -115,5 +115,40 @@ describe('taSnapshot indicator math', () => {
     const bars = barsFromCloses([10, 11, 12]);
     bars[2] = { ...bars[2], date: '2024-03-15' }; // ~10 weeks after bar 1
     expect(latestContiguous(bars)).toHaveLength(3);
+  });
+
+  describe('detectCorporateActions', () => {
+    const withJump = (factor: number, after: number[]) => {
+      const bars = barsFromCloses([...new Array(50).fill(300), ...after]);
+      bars[50] = { ...bars[50], open: 300 * factor };
+      return bars;
+    };
+
+    it('flags a persistent 1:5 split and snaps the factor', () => {
+      const ev = detectCorporateActions(withJump(0.2, new Array(15).fill(61)));
+      expect(ev).toHaveLength(1);
+      expect(ev[0].likely_factor).toBe(0.2);
+      expect(ev[0].confirmed_permanent).toBe(true);
+    });
+
+    it('flags a fresh jump that is too recent to confirm', () => {
+      const ev = detectCorporateActions(withJump(0.5, [150, 151]));
+      expect(ev).toHaveLength(1);
+      expect(ev[0].confirmed_permanent).toBe(false);
+    });
+
+    it('ignores a glitch that reverts', () => {
+      expect(detectCorporateActions(withJump(0.2, [60, 300, 301, 300]))).toHaveLength(0);
+    });
+
+    it('ignores jumps outside the lookback and normal band moves', () => {
+      expect(detectCorporateActions(withJump(0.2, new Array(15).fill(61)), 10)).toHaveLength(0);
+      expect(detectCorporateActions(barsFromCloses([100, 80, 85, 90]))).toHaveLength(0);
+    });
+
+    it('flags a consolidation (upward jump)', () => {
+      const ev = detectCorporateActions(withJump(10, new Array(15).fill(3000)));
+      expect(ev[0].likely_factor).toBe(10);
+    });
   });
 });

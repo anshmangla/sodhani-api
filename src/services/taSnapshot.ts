@@ -192,6 +192,61 @@ export function latestContiguous(bars: Bar[], maxGapDays = MAX_GAP_DAYS): Bar[] 
   return bars;
 }
 
+// Suspected splits/bonuses (or consolidations). Stored history mixes Yahoo bars
+// (adjusted as of when they were fetched) with raw exchange bars, and old bars
+// are never re-adjusted, so a corporate action shows up as a one-day jump that
+// no price band allows. Indicators computed across one would be meaningless.
+export const CA_LOOKBACK = 300; // sessions that measurably affect the indicators
+const CA_DOWN = 0.6;
+const CA_UP = 1 / CA_DOWN;
+const CA_CONFIRM_SESSIONS = 10;
+const CA_REVERT = 0.85; // back within 15% of the old level = data glitch, not a split
+const STANDARD_FACTORS = [0.5, 1 / 3, 0.25, 0.2, 0.1, 2 / 3, 0.4, 1 / 6, 0.125, 0.05];
+
+export interface SuspectedCorporateAction {
+  date: string;
+  prev_close: number;
+  close: number;
+  price_ratio: number;
+  likely_factor?: number;
+  confirmed_permanent: boolean;
+}
+
+export function detectCorporateActions(allBars: Bar[], lookback = CA_LOOKBACK): SuspectedCorporateAction[] {
+  const bars = latestContiguous(allBars);
+  const out: SuspectedCorporateAction[] = [];
+  for (let i = Math.max(1, bars.length - lookback); i < bars.length; i++) {
+    const pc = bars[i - 1].close;
+    if (!pc) continue;
+    const r = bars[i].close / pc;
+    if (r >= CA_DOWN && r <= CA_UP) continue;
+
+    // Persistent or a glitch? Look at the following sessions. A glitch's
+    // recovery bar is itself a big jump, so skip past it too.
+    const after = bars.slice(i + 1, i + 1 + CA_CONFIRM_SESSIONS).map((b) => b.close / pc);
+    const revertAt = after.findIndex((x) => (r < 1 ? x > CA_REVERT : x < 1 / CA_REVERT));
+    if (revertAt >= 0) {
+      i += revertAt + 1;
+      continue;
+    }
+
+    // Snap the open (cleaner than the close, which includes the day's own move)
+    // to a standard factor; a consolidation is the reciprocal.
+    const ro = (bars[i].open || bars[i].close) / pc;
+    const f = r < 1 ? ro : 1 / ro;
+    const snap = STANDARD_FACTORS.find((x) => Math.abs(f - x) / x <= 0.05);
+    out.push({
+      date: bars[i].date,
+      prev_close: round(pc) as number,
+      close: round(bars[i].close) as number,
+      price_ratio: round(r, 3) as number,
+      ...(snap ? { likely_factor: round(r < 1 ? snap : 1 / snap, 3) as number } : {}),
+      confirmed_permanent: after.length >= CA_CONFIRM_SESSIONS,
+    });
+  }
+  return out;
+}
+
 export function computeSnapshot(allBars: Bar[], nifty: IndexPoint[]) {
   const bars = latestContiguous(allBars);
   const n = bars.length;
