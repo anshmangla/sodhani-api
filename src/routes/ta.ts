@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { pool } from '../db/pool';
-import { computeSnapshot, compact, detectCorporateActions, latestContiguous, Bar, IndexPoint } from '../services/taSnapshot';
+import { computeSnapshot, compact, detectCorporateActions, latestContiguous, CA_FLAG_SESSIONS, Bar, IndexPoint } from '../services/taSnapshot';
 
 const router = Router();
 
@@ -83,10 +83,12 @@ router.get('/ta/:bseCode', asyncHandler(async (req, res) => {
     };
   });
 
-  // A suspected split/bonus inside the indicator window means the history isn't
-  // comparable across it, so report that instead of computing indicators.
+  // A suspected split/bonus means the history isn't comparable across it. A
+  // recent one (within CA_FLAG_SESSIONS) is reported instead of indicators; an
+  // older one only drops the fields whose window still spans it.
   const suspected = detectCorporateActions(bars);
-  if (suspected.length > 0) {
+  const youngest = suspected.length ? Math.min(...suspected.map((e) => e.sessions_ago)) : null;
+  if (youngest != null && youngest < CA_FLAG_SESSIONS) {
     const used = latestContiguous(bars);
     const last = used[used.length - 1];
     res.json({
@@ -115,7 +117,7 @@ router.get('/ta/:bseCode', asyncHandler(async (req, res) => {
   );
   const nifty: IndexPoint[] = niftyRes.rows.map((r: any) => ({ date: r.date, close: Number(r.value) }));
 
-  const snapshot = computeSnapshot(bars, nifty);
+  const snapshot = computeSnapshot(bars, nifty, youngest);
 
   // Fields that couldn't be computed (short history, no index data yet) are
   // omitted rather than returned as null.
@@ -125,6 +127,7 @@ router.get('/ta/:bseCode', asyncHandler(async (req, res) => {
     as_of_date: date,
     status: 'ok',
     ...snapshot,
+    suspected_events: suspected.length ? suspected : null,
   }));
 }));
 

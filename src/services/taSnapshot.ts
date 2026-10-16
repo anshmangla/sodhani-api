@@ -196,7 +196,14 @@ export function latestContiguous(bars: Bar[], maxGapDays = MAX_GAP_DAYS): Bar[] 
 // (adjusted as of when they were fetched) with raw exchange bars, and old bars
 // are never re-adjusted, so a corporate action shows up as a one-day jump that
 // no price band allows. Indicators computed across one would be meaningless.
-export const CA_LOOKBACK = 300; // sessions that measurably affect the indicators
+//
+// How far back a jump matters depends on the indicator:
+//   < CA_FLAG_SESSIONS (120): nearly everything spans it -> no indicators at all
+//   < 252: the 52-week levels and ATR percentile still span it -> omitted
+//   < CA_LOOKBACK (300): EMA 200 still carries noticeable pre-jump weight -> omitted
+export const CA_LOOKBACK = 300;
+export const CA_FLAG_SESSIONS = 120;
+const YEAR_SESSIONS = 252;
 const CA_DOWN = 0.6;
 const CA_UP = 1 / CA_DOWN;
 const CA_CONFIRM_SESSIONS = 10;
@@ -210,6 +217,7 @@ export interface SuspectedCorporateAction {
   price_ratio: number;
   likely_factor?: number;
   confirmed_permanent: boolean;
+  sessions_ago: number;
 }
 
 export function detectCorporateActions(allBars: Bar[], lookback = CA_LOOKBACK): SuspectedCorporateAction[] {
@@ -242,15 +250,21 @@ export function detectCorporateActions(allBars: Bar[], lookback = CA_LOOKBACK): 
       price_ratio: round(r, 3) as number,
       ...(snap ? { likely_factor: round(r < 1 ? snap : 1 / snap, 3) as number } : {}),
       confirmed_permanent: after.length >= CA_CONFIRM_SESSIONS,
+      sessions_ago: bars.length - 1 - i,
     });
   }
   return out;
 }
 
-export function computeSnapshot(allBars: Bar[], nifty: IndexPoint[]) {
+// `jumpSessionsAgo`: sessions since the most recent suspected corporate action
+// (>= CA_FLAG_SESSIONS; younger ones are reported instead of computed). Fields
+// whose window still spans the jump are left null.
+export function computeSnapshot(allBars: Bar[], nifty: IndexPoint[], jumpSessionsAgo: number | null = null) {
   const bars = latestContiguous(allBars);
   const n = bars.length;
   const last = n - 1;
+  const jumpInEma200 = jumpSessionsAgo != null && jumpSessionsAgo < CA_LOOKBACK;
+  const jumpInYear = jumpSessionsAgo != null && jumpSessionsAgo < YEAR_SESSIONS;
   const closes = bars.map((b) => b.close);
   const highs = bars.map((b) => b.high);
   const lows = bars.map((b) => b.low);
@@ -260,7 +274,7 @@ export function computeSnapshot(allBars: Bar[], nifty: IndexPoint[]) {
   const ema50 = ema(closes, 50);
   const ema200 = ema(closes, 200);
   const e50 = ema50[last];
-  const e200 = ema200[last];
+  const e200 = jumpInEma200 ? null : ema200[last];
   let emaAlignment: string | null = null;
   if (e50 != null && e200 != null) {
     if (close > e50 && e50 > e200) emaAlignment = 'bullish';
@@ -302,7 +316,7 @@ export function computeSnapshot(allBars: Bar[], nifty: IndexPoint[]) {
   // Volatility level + regime
   const atrSeries = atr(bars, 14);
   const atrPct: Num[] = atrSeries.map((v, i) => (v == null || closes[i] === 0 ? null : (v / closes[i]) * 100));
-  const atrPctile = percentileAt(atrPct, last, 252);
+  const atrPctile = jumpInYear ? null : percentileAt(atrPct, last, 252);
   const volState = atrPctile == null ? null : atrPctile < 20 ? 'compressed' : atrPctile <= 80 ? 'normal' : 'expanded';
   let daysInSqueeze = 0;
   if (volState === 'compressed') {
@@ -344,11 +358,14 @@ export function computeSnapshot(allBars: Bar[], nifty: IndexPoint[]) {
   };
 
   // Levels (52 weeks ≈ 252 sessions)
+  // With a jump inside the year, the 52-week figures are omitted and swing
+  // levels come from the bars after the jump only.
   const from52 = Math.max(0, n - 252);
-  const h52 = Math.max(...highs.slice(from52));
-  const l52 = Math.min(...lows.slice(from52));
-  const supports = pivotLows(lows.slice(from52)).map((i) => lows[i + from52]).filter((v) => v < close);
-  const resistances = pivotHighs(highs.slice(from52)).map((i) => highs[i + from52]).filter((v) => v > close);
+  const h52 = jumpInYear ? null : Math.max(...highs.slice(from52));
+  const l52 = jumpInYear ? null : Math.min(...lows.slice(from52));
+  const fromLevels = jumpInYear ? Math.max(from52, last - (jumpSessionsAgo as number)) : from52;
+  const supports = pivotLows(lows.slice(fromLevels)).map((i) => lows[i + fromLevels]).filter((v) => v < close);
+  const resistances = pivotHighs(highs.slice(fromLevels)).map((i) => highs[i + fromLevels]).filter((v) => v > close);
 
   return {
     as_of_session: bars[last].date,

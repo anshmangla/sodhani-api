@@ -766,16 +766,24 @@ GET /api/ta/500325?date=2026-10-15
 ```
 
 **Suspected split/bonus.** Stored history mixes Yahoo bars (adjusted when fetched) with raw exchange
-bars and is never re-adjusted, so a split or bonus appears as a one-day jump. If the last 300 sessions
-contain a close-to-close move beyond ×0.6 / ×1.67 that doesn't revert within 10 sessions, no indicators
-are returned; instead `status` is `"suspected_corporate_action"`:
+bars and is never re-adjusted, so a split or bonus appears as a one-day jump: a close-to-close move
+beyond ×0.6 / ×1.67 that doesn't revert within 10 sessions. What happens depends on how long ago it was:
+
+| Jump was | Response |
+|---|---|
+| < 120 sessions ago | No indicators; `status` is `"suspected_corporate_action"` (below) |
+| 120–251 sessions ago | `status: "ok"`, but EMA 200 (`ema200`, `above_ema200`, `ema_alignment`), the 52-week fields and the ATR percentile/state/squeeze are omitted; support/resistance use post-jump bars only |
+| 252–299 sessions ago | `status: "ok"`, only the EMA 200 fields are omitted |
+| 300+ sessions ago | Not considered |
+
+When `status` is `"ok"` and a jump was found, it is listed in `suspected_events`. A recent jump returns:
 ```json
 {
   "bse_code": "544209", "name": "Bansal Wire Industries Limited", "as_of_date": "2026-10-16",
   "as_of_session": "2026-10-16", "market_price": 61.8, "status": "suspected_corporate_action",
   "message": "The price history has a one-day jump that looks like an unadjusted split, bonus or consolidation, so technical indicators would be distorted and are not returned.",
   "suspected_events": [
-    { "date": "2026-10-15", "prev_close": 314.05, "close": 63.13, "price_ratio": 0.201, "likely_factor": 0.2, "confirmed_permanent": false }
+    { "date": "2026-10-15", "prev_close": 314.05, "close": 63.13, "price_ratio": 0.201, "likely_factor": 0.2, "confirmed_permanent": false, "sessions_ago": 1 }
   ]
 }
 ```

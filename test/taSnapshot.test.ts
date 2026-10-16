@@ -151,4 +151,23 @@ describe('taSnapshot indicator math', () => {
       expect(ev[0].likely_factor).toBe(10);
     });
   });
+
+  it('omits EMA200 and 52-week fields when an older jump is still in their window', () => {
+    const closes = [...new Array(300).fill(500), ...Array.from({ length: 200 }, (_, i) => 100 + (i % 3))];
+    const bars = barsFromCloses(closes);
+    const ev = detectCorporateActions(bars);
+    expect(ev).toHaveLength(1);
+    expect(ev[0].sessions_ago).toBe(199);
+    const out = compact(computeSnapshot(bars, [], ev[0].sessions_ago));
+    expect('ema200' in out.trend).toBe(false);
+    expect('ema_alignment' in out.trend).toBe(false);
+    expect(out.trend.ema50).toBeLessThan(110);
+    expect(out.levels.high_52w).toBeUndefined();
+    expect(out.volatility.atr_percentile).toBeUndefined();
+    expect(out.levels.nearest_resistance).toBeLessThan(110); // swing levels from post-jump bars only
+    // 260 sessions later only EMA200 is still dropped.
+    const out2 = compact(computeSnapshot(bars, [], 260));
+    expect('ema200' in out2.trend).toBe(false);
+    expect(out2.levels.high_52w).toBeDefined();
+  });
 });
