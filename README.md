@@ -776,7 +776,7 @@ beyond ×0.6 / ×1.67 that doesn't revert within 10 sessions. What happens depen
 | 252–299 sessions ago | `status: "ok"`, only the EMA 200 fields are omitted |
 | 300+ sessions ago | Not considered |
 
-When `status` is `"ok"` and a jump was found, it is listed in `suspected_events`. A recent jump returns:
+`suspected_events` appears only on this response, not on `"ok"` ones. A recent jump returns:
 ```json
 {
   "bse_code": "544209", "name": "Bansal Wire Industries Limited", "as_of_date": "2026-10-16",

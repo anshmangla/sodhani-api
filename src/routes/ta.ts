@@ -127,7 +127,6 @@ router.get('/ta/:bseCode', asyncHandler(async (req, res) => {
     as_of_date: date,
     status: 'ok',
     ...snapshot,
-    suspected_events: suspected.length ? suspected : null,
   }));
 }));
 
