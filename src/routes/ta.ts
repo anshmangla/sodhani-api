@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { pool } from '../db/pool';
-import { computeSnapshot, compact, detectCorporateActions, latestContiguous, CA_FLAG_SESSIONS, Bar, IndexPoint } from '../services/taSnapshot';
+import { computeSnapshot, compact, detectCorporateActions, CA_FLAG_SESSIONS, Bar, IndexPoint } from '../services/taSnapshot';
 
 const router = Router();
 
@@ -84,25 +84,13 @@ router.get('/ta/:bseCode', asyncHandler(async (req, res) => {
   });
 
   // A suspected split/bonus means the history isn't comparable across it. A
-  // recent one (within CA_FLAG_SESSIONS) is reported instead of indicators; an
-  // older one only drops the fields whose window still spans it.
+  // recent one (within CA_FLAG_SESSIONS) means no TA at all; an older one only
+  // drops the fields whose window still spans it.
   const suspected = detectCorporateActions(bars);
   const youngest = suspected.length ? Math.min(...suspected.map((e) => e.sessions_ago)) : null;
   if (youngest != null && youngest < CA_FLAG_SESSIONS) {
-    const used = latestContiguous(bars);
-    const last = used[used.length - 1];
-    res.json({
-      bse_code: bseCode,
-      name: companyRes.rows[0].FinInstrmNm ?? null,
-      as_of_date: date,
-      as_of_session: last.date,
-      market_price: Math.round(last.close * 100) / 100,
-      status: 'suspected_corporate_action',
-      message:
-        'The price history has a one-day jump that looks like an unadjusted split, bonus or consolidation, ' +
-        'so technical indicators would be distorted and are not returned.',
-      suspected_events: suspected,
-    });
+    // The response is the JSON literal null, so the caller simply has no TA.
+    res.json(null);
     return;
   }
 
@@ -125,7 +113,6 @@ router.get('/ta/:bseCode', asyncHandler(async (req, res) => {
     bse_code: bseCode,
     name: companyRes.rows[0].FinInstrmNm ?? null,
     as_of_date: date,
-    status: 'ok',
     ...snapshot,
   }));
 }));

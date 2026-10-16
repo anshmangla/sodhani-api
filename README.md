@@ -754,7 +754,7 @@ GET /api/ta/500325?date=2026-10-15
 ```json
 {
   "bse_code": "500325", "name": "RELIANCE INDUSTRIES LTD.", "as_of_date": "2026-10-15",
-  "as_of_session": "2026-10-15", "status": "ok", "history_days": 6733, "market_price": 1223.3,
+  "as_of_session": "2026-10-15", "history_days": 6733, "market_price": 1223.3,
   "trend": { "ema50": 1201.4, "ema200": 1250.2, "above_ema50": true, "above_ema200": false, "ema_alignment": "mixed", "ema50_slope": -0.8 },
   "trend_strength": { "adx": 18.2, "state": "weak" },
   "momentum": { "rsi": 61.3, "state": "neutral", "divergence": "none", "days_in_zone": 0 },
@@ -771,24 +771,10 @@ beyond ×0.6 / ×1.67 that doesn't revert within 10 sessions. What happens depen
 
 | Jump was | Response |
 |---|---|
-| < 120 sessions ago | No indicators; `status` is `"suspected_corporate_action"` (below) |
-| 120–251 sessions ago | `status: "ok"`, but EMA 200 (`ema200`, `above_ema200`, `ema_alignment`), the 52-week fields and the ATR percentile/state/squeeze are omitted; support/resistance use post-jump bars only |
-| 252–299 sessions ago | `status: "ok"`, only the EMA 200 fields are omitted |
+| < 120 sessions ago | `200` with body `null` (no TA at all) |
+| 120–251 sessions ago | EMA 200 (`ema200`, `above_ema200`, `ema_alignment`), the 52-week fields and the ATR percentile/state/squeeze are omitted; support/resistance use post-jump bars only |
+| 252–299 sessions ago | Only the EMA 200 fields are omitted |
 | 300+ sessions ago | Not considered |
-
-`suspected_events` appears only on this response, not on `"ok"` ones. A recent jump returns:
-```json
-{
-  "bse_code": "544209", "name": "Bansal Wire Industries Limited", "as_of_date": "2026-10-16",
-  "as_of_session": "2026-10-16", "market_price": 61.8, "status": "suspected_corporate_action",
-  "message": "The price history has a one-day jump that looks like an unadjusted split, bonus or consolidation, so technical indicators would be distorted and are not returned.",
-  "suspected_events": [
-    { "date": "2026-10-15", "prev_close": 314.05, "close": 63.13, "price_ratio": 0.201, "likely_factor": 0.2, "confirmed_permanent": false, "sessions_ago": 1 }
-  ]
-}
-```
-`likely_factor` is present when the jump matches a standard ratio; `confirmed_permanent` is false when
-fewer than 10 sessions have passed since the jump.
 
 **400** for a non-6-digit code or invalid date; **404** for an unknown code or no bars on/before `date`.
 
