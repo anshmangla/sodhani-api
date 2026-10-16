@@ -281,7 +281,7 @@ export function computeSnapshot(bars: Bar[], nifty: IndexPoint[]) {
   return {
     as_of_session: bars[last].date,
     history_days: n,
-    close: round(close),
+    market_price: round(close), // closing price on as_of_session
     trend: {
       ema50: round(e50),
       ema200: round(e200),

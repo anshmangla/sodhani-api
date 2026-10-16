@@ -740,7 +740,7 @@ On-demand TA snapshot for a BSE scrip code, computed from daily EOD bars up to a
 `date` (no lookahead). Indicators follow the "TA Indicator Spec for News-Driven Stock Agent":
 EMA 50/200 trend, ADX 14, RSI 14 with divergence, ATR 14 % and its 252-day percentile/squeeze,
 relative volume and 20/60 volume trend, relative strength vs NIFTY 50, and 52-week / swing levels.
-Each group returns values plus a state label (e.g. `overbought`, `trending`, `compressed`).
+`market_price` is the closing price on `as_of_session`. Each group returns values plus a state label (e.g. `overbought`, `trending`, `compressed`).
 Fields that can't be computed (not enough history) are omitted from the response, and a group
 with nothing left is omitted entirely; `rs_*` is omitted before NIFTY 50 history starts (2025-08-13).
 If `date` is a holiday or weekend, the last session before it is used and returned as `as_of_session`.
@@ -754,7 +754,7 @@ GET /api/ta/500325?date=2026-10-15
 ```json
 {
   "bse_code": "500325", "name": "RELIANCE INDUSTRIES LTD.", "as_of_date": "2026-10-15",
-  "as_of_session": "2026-10-15", "history_days": 6733, "close": 1223.3,
+  "as_of_session": "2026-10-15", "history_days": 6733, "market_price": 1223.3,
   "trend": { "ema50": 1201.4, "ema200": 1250.2, "above_ema50": true, "above_ema200": false, "ema_alignment": "mixed", "ema50_slope": -0.8 },
   "trend_strength": { "adx": 18.2, "state": "weak" },
   "momentum": { "rsi": 61.3, "state": "neutral", "divergence": "none", "days_in_zone": 0 },
