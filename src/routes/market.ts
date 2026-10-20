@@ -32,6 +32,58 @@ const PREV_CLOSE_LATERAL = `
        SELECT COALESCE(hp_latest."true_prev_close", hp_prev."prev_close") AS prev_close
      ) pc ON true`;
 
+// Latest-trading-day aggregate (`hp_latest`) and previous-day close (`hp_prev`)
+// for the `cs` company_stock row in scope, as used by /quote and /quotes.
+//
+// Every predicate is a plain range on the indexed (FinInstrmId, record_date),
+// so each lookup is a backward index scan that stops early. Filtering on
+// DATE(record_date) instead made the index unusable and scanned all ~10k rows
+// of an instrument's history, several times per instrument.
+//
+// Semantics match the DATE()-based form: hp_latest aggregates every bar on the
+// day of the latest bar; hp_prev takes the most recent earlier day and prefers
+// its midnight EOD bar over that day's intraday ticks.
+const LATEST_DAY_LATERALS = `
+     LEFT JOIN LATERAL (
+       SELECT record_date AS ts
+       FROM historical_prices
+       WHERE "FinInstrmId" = cs."FinInstrmId"
+       ORDER BY record_date DESC
+       LIMIT 1
+     ) last_bar ON true
+     LEFT JOIN LATERAL (
+       SELECT
+         MAX(record_date) as true_date,
+         (array_agg(open_price ORDER BY record_date ASC))[1] as true_open,
+         MAX(high_price) as true_high,
+         MIN(low_price) as true_low,
+         (array_agg(close_price ORDER BY record_date DESC))[1] as true_close,
+         SUM(volume) as true_volume,
+         MAX(prev_close) as true_prev_close
+       FROM historical_prices hp
+       WHERE hp."FinInstrmId" = cs."FinInstrmId"
+         AND hp.record_date >= DATE_TRUNC('day', last_bar.ts)
+     ) hp_latest ON true
+     LEFT JOIN LATERAL (
+       SELECT record_date AS ts
+       FROM historical_prices
+       WHERE "FinInstrmId" = cs."FinInstrmId"
+         AND record_date < DATE_TRUNC('day', last_bar.ts)
+       ORDER BY record_date DESC
+       LIMIT 1
+     ) prev_bar ON true
+     LEFT JOIN LATERAL (
+       SELECT close_price as prev_close
+       FROM historical_prices hp2
+       WHERE hp2."FinInstrmId" = cs."FinInstrmId"
+         AND hp2.record_date >= DATE_TRUNC('day', prev_bar.ts)
+         AND hp2.record_date < DATE_TRUNC('day', last_bar.ts)
+       ORDER BY
+           CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
+           hp2.record_date DESC
+         LIMIT 1
+     ) hp_prev ON true`;
+
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
     fn(req, res).catch(next);
@@ -298,38 +350,7 @@ router.get('/quote/:symbol', asyncHandler(async (req, res) => {
               ELSE 0
             END AS "ChangePercent"
      FROM company_stock cs
-     LEFT JOIN LATERAL (
-       SELECT
-         MAX(record_date) as true_date,
-         (array_agg(open_price ORDER BY record_date ASC))[1] as true_open,
-         MAX(high_price) as true_high,
-         MIN(low_price) as true_low,
-         (array_agg(close_price ORDER BY record_date DESC))[1] as true_close,
-         SUM(volume) as true_volume,
-         MAX(prev_close) as true_prev_close
-       FROM historical_prices hp
-       WHERE hp."FinInstrmId" = cs."FinInstrmId"
-         AND DATE(hp.record_date) = (
-           SELECT MAX(DATE(record_date))
-           FROM historical_prices
-           WHERE "FinInstrmId" = cs."FinInstrmId"
-         )
-     ) hp_latest ON true
-     LEFT JOIN LATERAL (
-       SELECT close_price as prev_close
-       FROM historical_prices hp2
-       WHERE hp2."FinInstrmId" = cs."FinInstrmId"
-         AND DATE(hp2.record_date) < (
-           SELECT MAX(DATE(record_date))
-           FROM historical_prices
-           WHERE "FinInstrmId" = cs."FinInstrmId"
-         )
-       ORDER BY
-           DATE(hp2.record_date) DESC,
-           CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
-           hp2.record_date DESC
-         LIMIT 1
-     ) hp_prev ON true
+     ${LATEST_DAY_LATERALS}
      ${PREV_CLOSE_LATERAL}
      WHERE UPPER(cs."TckrSymb") = UPPER($1) OR cs."FinInstrmId"::text = $1
      LIMIT 1`,
@@ -432,38 +453,7 @@ router.get('/quotes', asyncHandler(async (req, res) => {
               ELSE 0
             END AS "ChangePercent"
      FROM company_stock cs
-     LEFT JOIN LATERAL (
-       SELECT
-         MAX(record_date) as true_date,
-         (array_agg(open_price ORDER BY record_date ASC))[1] as true_open,
-         MAX(high_price) as true_high,
-         MIN(low_price) as true_low,
-         (array_agg(close_price ORDER BY record_date DESC))[1] as true_close,
-         SUM(volume) as true_volume,
-         MAX(prev_close) as true_prev_close
-       FROM historical_prices hp
-       WHERE hp."FinInstrmId" = cs."FinInstrmId"
-         AND DATE(hp.record_date) = (
-           SELECT MAX(DATE(record_date))
-           FROM historical_prices
-           WHERE "FinInstrmId" = cs."FinInstrmId"
-         )
-     ) hp_latest ON true
-     LEFT JOIN LATERAL (
-       SELECT close_price as prev_close
-       FROM historical_prices hp2
-       WHERE hp2."FinInstrmId" = cs."FinInstrmId"
-         AND DATE(hp2.record_date) < (
-           SELECT MAX(DATE(record_date))
-           FROM historical_prices
-           WHERE "FinInstrmId" = cs."FinInstrmId"
-         )
-       ORDER BY
-           DATE(hp2.record_date) DESC,
-           CASE WHEN EXTRACT(HOUR FROM hp2.record_date) = 0 AND EXTRACT(MINUTE FROM hp2.record_date) = 0 THEN 1 ELSE 0 END DESC,
-           hp2.record_date DESC
-         LIMIT 1
-     ) hp_prev ON true
+     ${LATEST_DAY_LATERALS}
      ${PREV_CLOSE_LATERAL}
      WHERE UPPER(cs."TckrSymb") = ANY($1) OR cs."FinInstrmId"::text = ANY($2)`,
     [upperCodes, codes]

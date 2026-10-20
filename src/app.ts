@@ -45,7 +45,11 @@ app.use(helmet({
 
 app.use(cors({
   origin: allowedOrigins,
-  credentials: true
+  credentials: true,
+  // Let browsers cache the preflight. Without it Chrome re-sends OPTIONS
+  // every 5s, adding a full round trip before most Bearer-token requests.
+  // Chrome caps this at 2h.
+  maxAge: 7200
 }));
 
 app.use('/api/payments/webhook', express.raw({ type: 'application/json', limit: '1mb' }));
