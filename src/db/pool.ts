@@ -24,7 +24,11 @@ export const pool = new Pool({
   // but CURRENT_DATE / DATE() resolve in the session timezone. Pin the session so
   // every date-boundary comparison agrees with how the scraper writes the rows;
   // a session west of UTC would shift them all by a day.
-  options: '-c timezone=UTC',
+  //
+  // jit=off: these are short request queries, but laterals over
+  // historical_prices push some plans past jit_above_cost, and Postgres then
+  // spends 300-500ms compiling a query that runs in ~6ms (/api/quotes).
+  options: '-c timezone=UTC -c jit=off',
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
