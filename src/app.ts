@@ -33,6 +33,10 @@ const allowedOrigins = [
   'https://www.safedge.in',
   'https://ra.safedge.in',
   'https://sodhani.vercel.app', 
+  'https://caplore-web.vercel.app',
+  'https://caplore.vercel.app',
+  'https://caplore.in',
+  'https://www.caplore.in', 
   'http://localhost:5173',
   'http://localhost:3000',
   'http://localhost:5174',      // sodhani-admin local dev
