@@ -17,19 +17,18 @@ export async function getCompanies(): Promise<Company[]> {
   // are invisible to search unless we also pull them from company_sectors,
   // which company_sectors keys by ticker OR by the raw BSE scrip code.
   const res = await pool.query(`
-    SELECT "TckrSymb" as code, "FinInstrmNm" as name
+    SELECT "TckrSymb" as code, COALESCE("FinInstrmNm", "TckrSymb") as name
     FROM company_stock
-    WHERE "TckrSymb" IS NOT NULL AND "FinInstrmNm" IS NOT NULL
+    WHERE "TckrSymb" IS NOT NULL
 
     UNION ALL
 
-    SELECT cs.fin_instrm_id as code, cs.company_name as name
+    SELECT cs.fin_instrm_id as code, COALESCE(cs.company_name, cs.fin_instrm_id) as name
     FROM company_sectors cs
-    WHERE cs.company_name IS NOT NULL
-      AND cs.fin_instrm_id IS NOT NULL
+    WHERE cs.fin_instrm_id IS NOT NULL
       AND NOT EXISTS (
         SELECT 1 FROM company_stock c
-        WHERE c."TckrSymb" IS NOT NULL AND c."FinInstrmNm" IS NOT NULL
+        WHERE c."TckrSymb" IS NOT NULL
           AND (c."TckrSymb" = cs.fin_instrm_id OR c."FinInstrmId"::text = cs.fin_instrm_id)
       )
   `);

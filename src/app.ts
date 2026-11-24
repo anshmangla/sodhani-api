@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import path from 'path';
 import { globalLimiter } from './middleware/rateLimiter';
 import marketRouter from './routes/market';
+import investmentsRouter from './routes/investments';
 import taRouter from './routes/ta';
 import peersRouter from './routes/peers';
 import authRouter from './routes/auth';
@@ -48,7 +49,13 @@ app.use(helmet({
 }));
 
 app.use(cors({
-  origin: allowedOrigins,
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin) || /\.vercel\.app$/.test(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, false);
+    }
+  },
   credentials: true,
   // Let browsers cache the preflight. Without it Chrome re-sends OPTIONS
   // every 5s, adding a full round trip before most Bearer-token requests.
@@ -72,6 +79,7 @@ app.use('/api', globalLimiter);
 // GET /company/:symbol/:concern is a wildcard that would otherwise swallow
 // GET /company/:symbol/peers (binding "peers" as :concern and 400ing).
 app.use('/api', peersRouter);
+app.use('/api/investments', investmentsRouter);
 app.use('/api', marketRouter);
 app.use('/api', taRouter);
 app.use('/api/auth', authRouter);
