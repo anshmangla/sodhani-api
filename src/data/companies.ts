@@ -2,6 +2,18 @@ import { pool } from '../db/pool';
 
 export type Company = { code: string; name: string };
 
+// Exchange names run dotted initials straight into the next word
+// ("J.K.Shah Commerce...", "J.K.CEMENT LTD."). Add the missing space.
+export function tidyName(name: string): string {
+  return name.replace(/\b((?:[A-Za-z]\.){2,})(?=[A-Za-z]{2})/g, '$1 ');
+}
+
+// Punctuation- and space-insensitive key, so "JK Cement", "J.K. Cement" and
+// "J.K.CEMENT LTD." all meet.
+export function searchKey(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 let cachedCompanies: Company[] | null = null;
 let lastCacheTime = 0;
 
@@ -33,7 +45,7 @@ export async function getCompanies(): Promise<Company[]> {
       )
   `);
 
-  cachedCompanies = res.rows;
+  cachedCompanies = (res.rows as Company[]).map((c) => ({ ...c, name: tidyName(c.name) }));
   lastCacheTime = now;
   return cachedCompanies;
 }
@@ -46,9 +58,12 @@ export async function searchCompanies(query: string, limit = 20): Promise<Compan
 
   const companies = await getCompanies();
   const lowerQuery = trimmedQuery.toLowerCase();
+  const queryKey = searchKey(trimmedQuery);
 
   const results = companies.filter((company) => {
-    const nameMatch = company.name.toLowerCase().includes(lowerQuery);
+    const nameMatch =
+      company.name.toLowerCase().includes(lowerQuery) ||
+      (queryKey.length > 0 && searchKey(company.name).includes(queryKey));
     const codeMatch = company.code === trimmedQuery || company.code.startsWith(trimmedQuery);
     return nameMatch || codeMatch;
   });

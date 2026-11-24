@@ -34,3 +34,19 @@ describe('GET /api/ra/companies (search)', () => {
     expect(codes.filter((c: string) => c === 'HDFCBANK')).toHaveLength(1);
   });
 });
+
+describe('company search name handling', () => {
+  it('matches regardless of dots and spaces in the name', async () => {
+    const { searchKey } = await import('../src/data/companies');
+    expect(searchKey('J.K.CEMENT LTD.')).toContain(searchKey('JK Cement'));
+    expect(searchKey('J.K.Shah Commerce Education Limited')).toContain(searchKey('J.K. Shah'));
+  });
+
+  it('spaces dotted initials from the exchange name', async () => {
+    const { tidyName } = await import('../src/data/companies');
+    expect(tidyName('J.K.Shah Commerce Education Limited')).toBe('J.K. Shah Commerce Education Limited');
+    expect(tidyName('J.K.CEMENT LTD.')).toBe('J.K. CEMENT LTD.');
+    expect(tidyName('Reliance Industries Ltd.')).toBe('Reliance Industries Ltd.');
+    expect(tidyName('A.B.C. Ltd')).toBe('A.B.C. Ltd');
+  });
+});
