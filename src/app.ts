@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import path from 'path';
 import { globalLimiter } from './middleware/rateLimiter';
+import { responseCache } from './middleware/responseCache';
 import marketRouter from './routes/market';
 import investmentsRouter from './routes/investments';
 import taRouter from './routes/ta';
@@ -74,6 +75,10 @@ app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // Global rate limiter on all /api routes (100 req/min per IP)
 app.use('/api', globalLimiter);
+
+// Cache public market/investments data (headers + short in-process cache).
+// Only the paths listed in CACHE_RULES are affected.
+app.use('/api', responseCache);
 
 // peersRouter must be mounted before marketRouter: marketRouter's
 // GET /company/:symbol/:concern is a wildcard that would otherwise swallow
